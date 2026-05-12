@@ -2,7 +2,6 @@ import queue
 from copy import deepcopy
 from typing import Dict, Union
 from src.server.task import Session
-from multi_agent.mods import LangchainSession
 from src.typings import SampleStatus
 from src.typings import AgentContextLimitException
 from src.utils import ColorMessage
@@ -19,7 +18,7 @@ class FakeSession:
         pass
 
 class SessionWrapper:
-    def __init__(self, session: Union[Session, FakeSession, LangchainSession], proxy: Proxy):
+    def __init__(self, session: Union[Session, FakeSession], proxy: Proxy):
         self.session = session
         self.proxy = proxy
         self.decorate_method('action')

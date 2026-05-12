@@ -1,8 +1,6 @@
 from typing import Dict, List, Union
 from src.server.task import Session
 from .typings import FakeSession, Proxy, MessageBuffer
-from multi_agent.mods import LangchainSession
-
 from copy import deepcopy
 import asyncio
 import functools
@@ -41,7 +39,7 @@ class MultiAgentProxy(Proxy):
         get_next_agent: Returns the id of the next agent.
         set_current_agent: Sets the current agent to the given id.
     """
-    def __init__(self, session: Union[Session, FakeSession, LangchainSession], num_agents: int, conversation_template: str = "{agent_name} says:\n{message}"):
+    def __init__(self, session: Union[Session, FakeSession], num_agents: int, conversation_template: str = "{agent_name} says:\n{message}"):
         self.session = session
         self.num_agents = num_agents
         self.conversation_template = conversation_template
@@ -60,10 +58,14 @@ class MultiAgentProxy(Proxy):
         # print(self.session.history)
         if len(self.session.history) % 2 != 1:
             for i in range(len(self.session.history)-1, -1, -1):
-                if self.session.history[i].role == "agent":
+                item = self.session.history[i]
+                role = item.get("role") if hasattr(item, "get") else getattr(item, "role", None)
+                if role == "agent":
                     break
                 else:
-                    concatenated_content = self.session.history.pop(i).content + "\n" + concatenated_content
+                    popped = self.session.history.pop(i)
+                    content = popped.get("content", "") if hasattr(popped, "get") else getattr(popped, "content", "")
+                    concatenated_content = str(content) + "\n" + concatenated_content
                     # print("Popped: ", concatenated_content)
         if concatenated_content != "":
             self.session.inject({
@@ -74,7 +76,7 @@ class MultiAgentProxy(Proxy):
 
 
     def update_history(self, agent_id: int, history: Dict):
-        self.history[agent_id] = deepcopy(history)
+        self.history[agent_id] = list(history)
 
 
     def initialize_sessions(self, session_list: List):
@@ -97,13 +99,10 @@ class MultiAgentProxy(Proxy):
     def method_wrapper(self, method):
         @functools.wraps(method)
         def sync_wrapper(*args, **kwargs):
-            self.session.history = deepcopy(self.history[self.current_agent])
+            self.session.history = list(self.history[self.current_agent])
             result = method(*args, **kwargs)
             self.balance_history()
-            # print("Injecting")
-            self.history[self.current_agent] = deepcopy(self.session.history)
-            # print("INJECT Result: ", self.session.history)
-
+            self.history[self.current_agent] = list(self.session.history)
             return result
         
         @functools.wraps(method)
@@ -217,7 +216,7 @@ class MultiAgentProxy(Proxy):
 
     async def generate_reply(self, message: Dict, max_rounds: int, sender: int, receiver: int):
         self.set_current_agent(sender)
-        self.session.history = deepcopy(self.history[self.current_agent])
+        self.session.history = list(self.history[self.current_agent])
 
         if max_rounds == 0:
             self.session.inject(message)
@@ -226,12 +225,11 @@ class MultiAgentProxy(Proxy):
             self.session.inject(message)
             self.balance_history()
             reply = await self.session.action()
-            print(reply)
             self.message_buffer[receiver].put(({
                 "role": "user",
                 "content": reply,
             }, max_rounds-1, sender))
-        self.history[self.current_agent] = deepcopy(self.session.history)
+        self.history[self.current_agent] = list(self.session.history)
 
 
     def clean_buffer(self,):
@@ -250,8 +248,9 @@ class MultiAgentProxy(Proxy):
     
     
     def set_current_agent(self, agent_id: int) -> int:
-        # print("Setting Current Agent to ", agent_id)
-        self.history[self.current_agent] = deepcopy(self.session.history)
+        # Use list() instead of deepcopy — history entries are immutable dicts,
+        # so a shallow list copy is sufficient and orders of magnitude faster.
+        self.history[self.current_agent] = list(self.session.history)
         self.current_agent = agent_id
-        self.session.history = deepcopy(self.history[self.current_agent])
+        self.session.history = list(self.history[self.current_agent])
         return self.current_agent

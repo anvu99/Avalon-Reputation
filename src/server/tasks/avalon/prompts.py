@@ -120,10 +120,16 @@ You can simply output 0.5 for players whose information is not given. Please sum
 Answer: {0: score_for_0, 1: score_for_1, 2: score_for_2, 3: score_for_3, 4: score_for_4}
 """
 
-COTHOUGHT_PROMPT = """Please forget you are an AI. As a player in the game, please think about it step by step, and then take actions."""
+COTHOUGHT_PROMPT = """Please forget you are an AI. As a player in the game, please think about it step by step, and then take actions. 
+
+**CRITICAL RULES**:
+- You must ONLY speak for yourself. DO NOT simulate dialogue for other players.
+- Provide exactly ONE single continuous statement or thought for your turn.
+- DO NOT use the format "**Player X:**" to prefix your sentences.
+- DO NOT simulate the game engine or advance the game phases."""
 
 # Action Prompts
-CHOOSE_TEAM_LEADER = """You are the leader this round. Please make some statements about what team you want to propose.
+CHOOSE_TEAM_LEADER = """You are the leader this round. The current mission requires a team of EXACTLY {} players. Please make some statements about what team you want to propose.
 """
 
 CHOOSE_TEAM_ACTION = """Please choose {} players from player ids 0 to {} as team members.
@@ -132,10 +138,10 @@ CHOOSE_TEAM_ACTION = """Please choose {} players from player ids 0 to {} as team
 VOTE_TEAM_DISCUSSION = """Discussion Phase. Please discuss your thoughts on the team {} and what players should do in the current situation.
 """
 
-VOTE_TEAM_ACTION = """You're a player in this game. Do you approve the team {}? Please answer `Yes` or `No`.
+VOTE_TEAM_ACTION = """You're a player in this game. Do you approve the team {}? Please conclude your thought exactly with `Decision: Yes` or `Decision: No`.
 """
 
-VOTE_MISSION_ACTION = """The team {} was approved, which includes you. Do you want to help the mission succeed? Please answer `Yes` or `No`.
+VOTE_MISSION_ACTION = """The team {} was approved, which includes you. Do you want to help the mission succeed? Please conclude your thought exactly with `Decision: Yes` or `Decision: No`.
 """
 
 ASSASSINATION_PHASE = """Assassination phase. Your job is to assassinate Merlin. \
@@ -151,4 +157,9 @@ INFO_ROLE = """"There are {} players, including Player 0, Player 1, Player 2, Pl
 INFO_YOUR_ROLE = """You are {}, with identity {}. You are on the side of {}. Please do not forget your identity throughout the game.
 """
 
-DISCUSSION_SUFFIX = """\nProduce dialogue that aligns with your goals for the discussion. Note that dialogue will be seen by all players in the game. **Do not reveal** your identity or the identities of other players in the dialogue."""
+DISCUSSION_SUFFIX = """\nProduce dialogue that aligns with your goals for the discussion. Note that dialogue will be seen by all players in the game. **Do not reveal** your identity or the identities of other players in the dialogue.
+
+**CRITICAL RULES**:
+- You must ONLY speak for yourself. DO NOT simulate dialogue for other players.
+- Provide exactly ONE single continuous statement or thought for your turn.
+- DO NOT use the format "**Player X:**" to prefix your sentences."""

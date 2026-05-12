@@ -1,14 +1,54 @@
 import re
+import logging
+import contextvars
+import os
+from contextlib import asynccontextmanager
 
-def get_vote_result(answer: str):
-    match_vote = "Yes|No"
-    vote_result = []
+game_logger_var = contextvars.ContextVar('game_logger')
+
+def get_game_logger():
+    try:
+        return game_logger_var.get()
+    except LookupError:
+        return logging.getLogger("avalon_fallback")
+
+@asynccontextmanager
+async def game_logger_context(index, log_dir="logs"):
+    os.makedirs(log_dir, exist_ok=True)
+    logger = logging.getLogger(f"game_{index}")
+    logger.setLevel(logging.INFO)
+    fh = logging.FileHandler(os.path.join(log_dir, f"game_{index}.log"), mode='w')
+    fh.setFormatter(logging.Formatter('[%(asctime)s] %(message)s', datefmt='%Y-%m-%d %H:%M:%S'))
+    logger.addHandler(fh)
     
-    vote_result = re.findall(match_vote, answer)
+    token = game_logger_var.set(logger)
+    try:
+        yield logger
+    finally:
+        game_logger_var.reset(token)
+        for handler in logger.handlers[:]:
+            handler.close()
+            logger.removeHandler(handler)
+def get_vote_result(answer: str):
+    answer_clean = answer.strip()
+    
+    match = re.search(r'Decision:\s*(Yes|No)', answer_clean, re.IGNORECASE)
+    if match:
+        return match.group(1).capitalize()
+        
+    if answer_clean.lower().startswith("yes"): return "Yes"
+    if answer_clean.lower().startswith("no"): return "No"
+    
+    # Remove the template if the LLM hallucinated it to prevent falsely extracting 'No'
+    answer_clean = answer_clean.replace("{Yes|No}", "").replace("{yes|no}", "")
+    
+    match_vote = "Yes|No"
+    vote_result = re.findall(match_vote, answer_clean, re.IGNORECASE)
 
-    result = '' if len(vote_result) == 0 else vote_result[-1]
-
-    return result
+    if len(vote_result) == 0: 
+        return ''
+    
+    return vote_result[-1].capitalize()
 
 def get_team_result(answer: str):
     match_num = r"\d+"

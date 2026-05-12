@@ -3,7 +3,7 @@ import json
 import sys
 from typing import Dict, List, Union
 
-from pydantic import BaseModel, validator
+from pydantic import BaseModel, field_validator
 
 from src.utils import ColorMessage
 from .general import InstanceFactory, Assignment
@@ -34,7 +34,8 @@ class AssignmentConfig(BaseModel):
     definition: DefinitionConfig
     output: str = None
 
-    @validator("assignments", pre=True)
+    @field_validator("assignments", mode="before")
+    @classmethod
     def assignments_validation(cls, v):
         assert isinstance(v, list), f"'assignments' must be a list, but got {type(v)}"
         ret = []
@@ -57,7 +58,8 @@ class AssignmentConfig(BaseModel):
                     ret.append(Assignment(agent=a, task=t))
         return ret
 
-    @validator("output", pre=True)
+    @field_validator("output", mode="before")
+    @classmethod
     def output_validation(cls, v):
         predefined_structure = get_predefined_structure()
         if v is None:

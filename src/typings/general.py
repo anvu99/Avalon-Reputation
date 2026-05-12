@@ -1,7 +1,7 @@
 import builtins
 from typing import List, Dict, Union, Any, Literal
 
-from pydantic import BaseModel, validator
+from pydantic import BaseModel, field_validator
 
 JSONSerializable = Union[None, bool, int, float, str, List[Any], Dict[str, Any]]
 SampleIndex = Union[int, str]
@@ -11,7 +11,8 @@ class InstanceFactory(BaseModel):
     module: str
     parameters: Dict[str, Any] = {}
 
-    @validator("parameters", pre=True)
+    @field_validator("parameters", mode="before")
+    @classmethod
     def _ensure_dict(cls, v):
         if v is None:
             return {}

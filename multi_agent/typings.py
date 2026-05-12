@@ -1,7 +1,8 @@
 from typing import Dict, Any, Tuple
 
 class FakeSession:
-    history: list=[]    # Fake history
+    def __init__(self):
+        self.history: list = []
 
     async def action(self, input: Dict):
         pass

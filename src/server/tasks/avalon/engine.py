@@ -1,7 +1,8 @@
 from typing import ClassVar, List, Optional, Dict
 import numpy as np
 from pydantic import BaseModel
-from strategist.Avalon.avalon_exception import AvalonEnvException
+from .utils import get_game_logger
+from .avalon_exception import AvalonEnvException
 
 class AvalonBasicConfig(BaseModel):
     r"""Avalon game configuration
@@ -111,20 +112,19 @@ class AvalonGameEnvironment():
     - quest_leader (int): The id of the quest leader
     """
     def __init__(self, config: AvalonBasicConfig) -> None:
-        for key, value in config.dict().items():
+        for key, value in config.model_dump().items():
             setattr(self, key, value)
 
         self.config = config
 
         if not self.preset_flag:
-            print("New Game!")
+            get_game_logger().info("New Game!")
             self.reset()
 
     @classmethod
     def from_num_players(cls, num_players: int) -> 'AvalonGameEnvironment':
         r"""Instantiate the environment with number of players"""
         config = AvalonBasicConfig.from_num_players(num_players)
-        cls.config = config
 
         return cls(config)
 
@@ -132,9 +132,10 @@ class AvalonGameEnvironment():
     def from_presets(cls, presets: Dict) -> 'AvalonGameEnvironment':
         r"""Instantiate the environment with game presets"""
         config = AvalonBasicConfig.from_presets(presets)
-        cls.config = config
+        
+        instance = cls(config)
 
-        print(presets)
+        get_game_logger().info(f"Presets: {presets}")
 
         num_players = presets['num_players']
         quest_leader = presets['quest_leader']
@@ -146,25 +147,25 @@ class AvalonGameEnvironment():
             if role in ["Morgana", "Mordred", "Oberon", "Minion", "Assassin"]:
                 is_good[idx] = False
 
-        cls.roles = np.array(role_ids)
-        cls.role_names = role_names
-        cls.is_good = np.array(is_good)
-        cls.quest_leader = quest_leader
+        instance.roles = np.array(role_ids)
+        instance.role_names = role_names
+        instance.is_good = np.array(is_good)
+        instance.quest_leader = quest_leader
 
-        cls.round = 0
-        cls.quest = 0
-        cls.phase = 0
-        cls.turn = 0
-        cls.done = False
-        cls.good_victory = False
+        instance.round = 0
+        instance.quest = 0
+        instance.phase = 0
+        instance.turn = 0
+        instance.done = False
+        instance.good_victory = False
 
-        cls.quest_team = []
-        cls.team_votes = []
-        cls.quest_votes = []
-        cls.quest_results = []
+        instance.quest_team = []
+        instance.team_votes = []
+        instance.quest_votes = []
+        instance.quest_results = []
         
 
-        return cls(config)
+        return instance
 
     def reset(self):
         '''
@@ -480,7 +481,7 @@ if __name__ == "__main__":
     print(env.roles)
 
     # print(env.get_role(0))
-    # print(config.dict())
+    # print(config.model_dump())
     # print(env.roles)
     # print(env.is_good)
     # print(config.ROLES)
