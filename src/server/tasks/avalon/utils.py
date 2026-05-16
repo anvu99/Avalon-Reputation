@@ -71,9 +71,21 @@ def get_assassination_result(message: str, answer: str):
     return player_id
 
 def get_believed_player_sides(answer):
-    scores = eval(answer.split("Answer: ")[-1])
-
-    return scores
+    try:
+        match_good = re.search(r'Answer:\s*({[^}]+})', answer)
+        scores = eval(match_good.group(1)) if match_good else eval(answer.split("Answer: ")[-1].split("\n")[0])
+    except:
+        scores = {}
+        
+    merlin_scores = {}
+    try:
+        match_merlin = re.search(r'Merlin:\s*({[^}]+})', answer)
+        if match_merlin:
+            merlin_scores = eval(match_merlin.group(1))
+    except:
+        pass
+        
+    return scores, merlin_scores
 
 def verbalize_team_result(team: frozenset, votes, outcome: bool):
     verbal_vote = {

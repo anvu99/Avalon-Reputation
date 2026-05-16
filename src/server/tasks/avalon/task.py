@@ -17,6 +17,7 @@ from .wrapper import FakeSession, AvalonSessionWrapper
 from .utils import verbalize_team_result, verbalize_mission_result, get_game_logger
 
 from .agents.llm_with_discussion import LLMAgentWithDiscussion
+from .reputation_memory import ReputationMemory
 
 from src.typings import AgentContextLimitException
 from .avalon_exception import AvalonAgentActionException
@@ -30,8 +31,63 @@ AGENT_FINDER = {
     'llm': LLMAgentWithDiscussion,
 }
 
+
+def build_round_summary(
+    leader: int,
+    team: frozenset,
+    votes: list,
+    outcome: bool,
+    discussion_history: list,
+    quest_result: bool = None,
+    num_fails: int = None,
+) -> str:
+    """Build a human-readable summary of a completed round for ReputationMemory updates.
+
+    Parameters
+    ----------
+    leader:
+        Player id of the quest leader who proposed the team.
+    team:
+        The proposed team (frozenset of player ids).
+    votes:
+        List of team votes, one per player (1 = approve, 0 = reject).
+    outcome:
+        True if the team was approved, False if rejected.
+    discussion_history:
+        List of "Player X:\n<text>" strings from this round's discussion.
+    quest_result:
+        True if the quest succeeded, False if it failed, None if team was rejected.
+    num_fails:
+        Number of fail votes cast on the quest (None if team was rejected).
+    """
+    lines = []
+    lines.append(f"Quest Leader: Player {leader}")
+    lines.append(f"Proposed Team: {sorted(list(team))}")
+
+    vote_labels = []
+    for pid, v in enumerate(votes):
+        vote_labels.append(f"Player {pid}: {'Approve' if v == 1 else 'Reject'}")
+    lines.append("Team Vote Results: " + ", ".join(vote_labels))
+    lines.append(f"Team Vote Outcome: {'Approved' if outcome else 'Rejected'}")
+
+    if quest_result is not None:
+        lines.append(f"Quest Outcome: {'Succeeded' if quest_result else 'Failed'}")
+        if num_fails is not None:
+            lines.append(f"Number of Fail Votes: {num_fails}")
+
+    if discussion_history:
+        lines.append("Discussion this round:")
+        for entry in discussion_history:
+            lines.append(f"  {entry}")
+    else:
+        lines.append("Discussion this round: (none)")
+
+    return "\n".join(lines)
+
+
 class AvalonBench(Task):
-    def __init__(self, num_players, agent_list, discussion, data_file, **configs):
+    def __init__(self, num_players, agent_list, discussion, data_file,
+                 use_reputation_memory: bool = False, **configs):
         super().__init__("avalon", **configs)
 
         self.num_players = num_players
@@ -39,7 +95,8 @@ class AvalonBench(Task):
 
         self.discussion = discussion
         self.data_file = data_file
-
+        self.num_discussion_rounds = configs.pop('num_discussion_rounds', 1)
+        self.use_reputation_memory = use_reputation_memory
 
         self.data: List[Tuple[dict, set]] = []
         with open(self.data_file, "r") as f:
@@ -88,6 +145,7 @@ class AvalonBench(Task):
 
         true_player_sides = []
         believed_player_sides = []
+        believed_merlin_sides = []
         game_env_log = []
 
         llm_idx = 0
@@ -135,6 +193,24 @@ class AvalonBench(Task):
                 await player_list[i].initialize_game_info(player_list=env.get_roles(), env=env)
             
             proxy.get_next_agent()
+
+        # Activate ReputationMemory for Player 0 (llm_idx) if enabled
+        if self.use_reputation_memory and hasattr(player_list[llm_idx], 'reputation_memory'):
+            player_list[llm_idx].reputation_memory = ReputationMemory(
+                player_id=llm_idx,
+                num_players=num_players,
+            )
+            get_game_logger().info(
+                f"[ReputationMemory] Initialized for Player {llm_idx} "
+                f"(tracking peers: {sorted(player_list[llm_idx].reputation_memory.peers.keys())})"
+            )
+            # Lock any peers whose alignment is already known at game start
+            player_list[llm_idx].lock_known_peers()
+
+        # Track per-round state needed for build_round_summary across phases
+        current_leader: int = -1
+        current_team: frozenset = frozenset()
+        current_votes: list = []
         
         # try:
         while not env.done:
@@ -146,6 +222,7 @@ class AvalonBench(Task):
             # if phase is team selection phase, ask for team
             if phase == 0:
                 leader = env.get_quest_leader()
+                current_leader = leader   # capture for round summary
                 game_env_log.append(f"Selection Phase, the leader is Player {leader}")
                 get_game_logger().info("##### System #####")
                 get_game_logger().info(f"Selection Phase, the leader is Player {leader}")
@@ -164,8 +241,15 @@ class AvalonBench(Task):
                     proxy.set_current_agent(leader)
                     for idx, player in enumerate(player_list):
                         if hasattr(player, 'summarize'):
+                            # Skip summarization on the very first round (Mission 0, Round 0) 
+                            # because there is no game history yet, which causes the LLM to hallucinate past rounds.
+                            if env.turn == 0 and env.round == 0:
+                                continue
+                            
                             proxy.set_current_agent(idx)
-                            summary_item = await player.summarize(env=env)
+                            summary_item = await player.summarize(env=env, round_num=env.round, mission_id=env.turn)
+                            if hasattr(player, 'periodic_predict'):
+                                await player.periodic_predict(round_num=env.round, mission_id=env.turn)
                             if summary_item and len(summary_item) > 0:
                                 last_item = summary_item[-1]
                                 content = last_item.get('content', '') if isinstance(last_item, dict) else getattr(last_item, 'content', '')
@@ -174,58 +258,59 @@ class AvalonBench(Task):
                     # team, statement = await player_list[leader].test()
                     # print(leader)
                     # print(player_list[leader].team_discussion)
-                    if hasattr(player_list[leader], 'team_discussion'):
-                        proxy.set_current_agent(leader)
-                        dialogue = await player_list[leader].team_discussion(
-                                team_size           =   env.get_team_size(),
-                                team_leader_id      =   leader,
-                                mission_id          =   env.turn,
-                                env                 =   env,
-                                dialogue_history    =   dialogue_history,
-                            )
-                        if dialogue is not None:
-                            if isinstance(dialogue, dict):
-                                dialogue = dialogue.get('content', '')
-                            else:
-                                dialogue = getattr(dialogue, 'content', str(dialogue))
-                            get_game_logger().info(f"Player {leader}(Leader): {dialogue}")
-                            roles.append(player_list[leader].role)
-                            dialogue_history.append(leader, dialogue)
-                            discussion_history.append(f"Player {leader}:\n{dialogue}")
-                    speaking_order.append(leader)
-                    private_informations.append(getattr(player_list[leader], 'system_info', ''))
-                    # intended_team = await player_list[leader].propose_team(
-                    #     team_size           =   env.get_team_size(),
-                    #     mission_id          =   env.turn,
-                    #     env                 =   env,
-                    # )
-                    # intended_team_list.append(list(intended_team))
-
-                    # Discussion (sequential, once, in order for now) and Summarize
-                    for idx in range(leader+1, leader + num_players):
-                        player_id = idx % num_players
-                        player = player_list[player_id]
-                        if hasattr(player, 'team_discussion'):
-                            proxy.set_current_agent(player_id)
-                            dialogue = await player.team_discussion(
-                                team_size           =   env.get_team_size(),
-                                team_leader_id      =   leader,
-                                mission_id          =   env.turn,
-                                dialogue_history    =   dialogue_history,
-                                env                 =   env,
-                            )
+                    for _ in range(self.num_discussion_rounds):
+                        if hasattr(player_list[leader], 'team_discussion'):
+                            proxy.set_current_agent(leader)
+                            dialogue = await player_list[leader].team_discussion(
+                                    team_size           =   env.get_team_size(),
+                                    team_leader_id      =   leader,
+                                    mission_id          =   env.turn,
+                                    env                 =   env,
+                                    dialogue_history    =   dialogue_history,
+                                )
                             if dialogue is not None:
                                 if isinstance(dialogue, dict):
                                     dialogue = dialogue.get('content', '')
                                 else:
                                     dialogue = getattr(dialogue, 'content', str(dialogue))
-                                get_game_logger().info(f"Player {player_id}: {dialogue}")
-                                roles.append(player.role)
-                                dialogue_history.append(player_id, dialogue)
-                                discussion_history.append(f"Player {player_id}:\n{dialogue}")
-                        
-                        speaking_order.append(player_id)
-                        private_informations.append(getattr(player, 'system_info', ''))
+                                get_game_logger().info(f"Player {leader}(Leader): {dialogue}")
+                                roles.append(player_list[leader].role)
+                                dialogue_history.append(leader, dialogue)
+                                discussion_history.append(f"Player {leader}:\n{dialogue}")
+                        speaking_order.append(leader)
+                        private_informations.append(getattr(player_list[leader], 'system_info', ''))
+                        # intended_team = await player_list[leader].propose_team(
+                        #     team_size           =   env.get_team_size(),
+                        #     mission_id          =   env.turn,
+                        #     env                 =   env,
+                        # )
+                        # intended_team_list.append(list(intended_team))
+
+                        # Discussion (sequential, once, in order for now) and Summarize
+                        for idx in range(leader+1, leader + num_players):
+                            player_id = idx % num_players
+                            player = player_list[player_id]
+                            if hasattr(player, 'team_discussion'):
+                                proxy.set_current_agent(player_id)
+                                dialogue = await player.team_discussion(
+                                    team_size           =   env.get_team_size(),
+                                    team_leader_id      =   leader,
+                                    mission_id          =   env.turn,
+                                    dialogue_history    =   dialogue_history,
+                                    env                 =   env,
+                                )
+                                if dialogue is not None:
+                                    if isinstance(dialogue, dict):
+                                        dialogue = dialogue.get('content', '')
+                                    else:
+                                        dialogue = getattr(dialogue, 'content', str(dialogue))
+                                    get_game_logger().info(f"Player {player_id}: {dialogue}")
+                                    roles.append(player.role)
+                                    dialogue_history.append(player_id, dialogue)
+                                    discussion_history.append(f"Player {player_id}:\n{dialogue}")
+                            
+                            speaking_order.append(player_id)
+                            private_informations.append(getattr(player, 'system_info', ''))
 
                     # query the intended teams after discussion
                     # for idx, player in enumerate(player_list):
@@ -267,6 +352,7 @@ class AvalonBench(Task):
                     mission_id          =   env.turn,
                     env                 =   env,
                 )
+                current_team = team   # capture for round summary
                 env.choose_quest_team(
                     team   =  frozenset(team),
                     leader =  leader
@@ -290,13 +376,7 @@ class AvalonBench(Task):
                         env                 =   env,
                         )
                     votes.append(vote)
-                # votes = [
-                #     await player_list[i].vote_on_team(
-                #         team                =   env.get_current_quest_team(),
-                #         mission_id          =   env.turn,
-                #         env                 =   env,
-                #         ) for i in range(num_players)
-                #         ]
+                current_votes = votes   # capture for round summary
                 try:
                     outcome = env.gather_team_votes(votes)
                 except Exception as e:
@@ -318,6 +398,24 @@ class AvalonBench(Task):
                 game_env_log.append("Team result: " + verbalize_team_result(team=env.get_current_quest_team(), votes=votes, outcome=outcome[2]))
                 get_game_logger().info("##### System #####")
                 get_game_logger().info("Team result: " + verbalize_team_result(team=env.get_current_quest_team(), votes=votes, outcome=outcome[2]))
+
+                # Update reputation memory after a REJECTED team vote
+                if not outcome[2] and self.use_reputation_memory:
+                    proxy.set_current_agent(llm_idx)
+                    round_summary = build_round_summary(
+                        leader=current_leader,
+                        team=current_team,
+                        votes=current_votes,
+                        outcome=False,
+                        discussion_history=discussion_history,
+                        quest_result=None,
+                        num_fails=None,
+                    )
+                    await player_list[llm_idx].update_reputation_memory(
+                        round_summary=round_summary,
+                        round_num=env.round,
+                    )
+                    discussion_history.clear()
 
 
             # if phase is quest voting phase, ask for votes
@@ -356,6 +454,25 @@ class AvalonBench(Task):
                 game_env_log.append("Quest result: " + verbalize_mission_result(team=env.get_current_quest_team(), outcome=outcome[2]))
                 get_game_logger().info("##### System #####")
                 get_game_logger().info("Quest result: " + verbalize_mission_result(team=env.get_current_quest_team(), outcome=outcome[2]))
+
+                # Update reputation memory after a completed quest
+                if self.use_reputation_memory:
+                    proxy.set_current_agent(llm_idx)
+                    round_summary = build_round_summary(
+                        leader=current_leader,
+                        team=current_team,
+                        votes=current_votes,
+                        outcome=True,
+                        discussion_history=discussion_history,
+                        quest_result=outcome[2],
+                        num_fails=outcome[3],
+                    )
+                    await player_list[llm_idx].update_reputation_memory(
+                        round_summary=round_summary,
+                        round_num=env.turn - 1,
+                    )
+                    discussion_history.clear()
+
             
             # if phase is assassination phase, ask for assassination
             elif phase == 3:
@@ -385,13 +502,14 @@ class AvalonBench(Task):
         for idx, player in enumerate(player_list):
             proxy.set_current_agent(idx)
             if idx == llm_idx:
-                llm_believed_player_sides = await player.get_believed_sides(
+                llm_believed_player_sides, llm_believed_merlin_sides = await player.get_believed_sides(
                     num_players =   self.num_players,
                     env         =   env,
                     )
 
                 true_player_sides.append(list(map(int, env.is_good)))
                 believed_player_sides.append(llm_believed_player_sides)
+                believed_merlin_sides.append(llm_believed_merlin_sides)
 
         if env.good_victory:
             answer = 1
@@ -425,6 +543,7 @@ class AvalonBench(Task):
             f"role_of_Player_{llm_idx}": player_list[llm_idx].role_name,
             f"Player_{llm_idx}_wins": (answer > 0) == bool(player_list[llm_idx].side),
             f"Player_{llm_idx}_deduc_acc": scoring.deduction_acc(true_player_sides, believed_player_sides) if true_player_sides else 0.0,
+            f"Player_{llm_idx}_merlin_pred": believed_merlin_sides[0] if believed_merlin_sides else {},
             "game_env_log": game_env_log,
         }
         

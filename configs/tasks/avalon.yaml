@@ -4,6 +4,7 @@ default:
     concurrency: 5
     num_players: 5
     discussion: False
+    use_reputation_memory: False  # set to True to activate ReputationMemory for Player 0
 
 avalon-dev-naive:
   parameters:
@@ -61,3 +62,12 @@ avalon-dev-multi:
     name: "AvalonBench-dev-multi"
     data_file: "data/avalon/dev.json"
     agent_list: ["llm", "llm", "llm", "llm", "llm"]
+
+# Reputation memory variant — Player 0 maintains a structured peer-reputation memory
+avalon-dev-multi-reputation:
+  parameters:
+    name: "AvalonBench-dev-multi-reputation"
+    data_file: "data/avalon/all_dev.json"
+    agent_list: ["llm", "llm", "llm", "llm", "llm"]
+    discussion: True
+    use_reputation_memory: True

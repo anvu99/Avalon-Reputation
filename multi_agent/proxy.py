@@ -86,7 +86,7 @@ class MultiAgentProxy(Proxy):
     def get_agent_names(self):
         self.agent_names = ['' for _ in range(self.num_agents)]
         for i in range(self.num_agents):
-            self.agent_names[i] = f"Player {i+1}"
+            self.agent_names[i] = f"Player {i}"
 
     def reply_single_message(self, sender: int, reply_agent: int):
         pass

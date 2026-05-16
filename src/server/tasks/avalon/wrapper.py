@@ -2,7 +2,7 @@ from copy import deepcopy
 from typing import Dict, Union
 from src.server.task import Session
 from .utils import get_team_result, get_vote_result, get_assassination_result, get_believed_player_sides, get_game_logger
-from .prompts import CHECK_CHOOSE_TEAM_PROMPT, CHECK_VOTE_ON_QUEST_PROMPT, CHECK_VOTE_ON_TEAM_PROMPT, CHECK_ASSASSINATE_PROMPT, CHECK_BELIEVED_SIDES_PROMPT
+from .prompts import CHECK_CHOOSE_TEAM_PROMPT, CHECK_VOTE_ON_QUEST_PROMPT, CHECK_VOTE_ON_TEAM_PROMPT, CHECK_ASSASSINATE_PROMPT, CHECK_BELIEVED_SIDES_PROMPT, GET_MERLIN_PROBABILITIES
 from src.typings import SampleStatus
 from src.typings import AgentContextLimitException
 from .avalon_exception import AvalonAgentActionException
@@ -223,20 +223,28 @@ class AvalonSessionWrapper(SessionWrapper):
                 answer = 0
                 
         elif mode == "get_believed_sides":
+            prompt = result + '\n\n' + CHECK_BELIEVED_SIDES_PROMPT
+            role_name = input.get("role_name", "")
+            if role_name != "Merlin":
+                prompt += '\n' + GET_MERLIN_PROBABILITIES
+                
             self.session.inject({
                 "role": "user",
-                "content": result + '\n\n' + CHECK_BELIEVED_SIDES_PROMPT
+                "content": prompt
             })
             answer = await self.session.action()
             answer = answer.content
             try:
-                scores = get_believed_player_sides(answer)
-                answer = []
+                scores, merlin_scores = get_believed_player_sides(answer)
+                answer_good = []
+                answer_merlin = []
                 for i in range(self.proxy.num_agents):
-                    answer.append(scores.get(i, 0.5) if isinstance(scores, dict) else 0.5)
+                    answer_good.append(scores.get(i, 0.5) if isinstance(scores, dict) else 0.5)
+                    answer_merlin.append(merlin_scores.get(i, 0.5) if isinstance(merlin_scores, dict) else 0.5)
+                answer = (answer_good, answer_merlin)
             except:
                 get_game_logger().warning(f"Warning: Defaulting believed sides to 0.5 due to invalid output: {answer}")
-                answer = [0.5] * self.proxy.num_agents
+                answer = ([0.5] * self.proxy.num_agents, [0.5] * self.proxy.num_agents)
 
         # Restore the history
         self.session.history = list(past_history)
