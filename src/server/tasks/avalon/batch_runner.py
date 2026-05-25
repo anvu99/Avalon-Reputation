@@ -134,7 +134,7 @@ class AvalonBatchRunner:
         return all_results, per_batch_metrics
 
     async def _synthesize_memory(self, agent, ltm, n_games: int, player_id: int = 0):
-        from .prompts import LONG_TERM_SYNTHESIS_PROMPT
+        from .prompts import LONG_TERM_SYNTHESIS_PROMPT, LONG_TERM_SYNTHESIS_PROMPT_COUNTER_NORM
         from .utils import get_game_logger
 
         if not ltm.pending_lessons:
@@ -143,7 +143,8 @@ class AvalonBatchRunner:
         lessons = "\n\n---\n\n".join(ltm.pending_lessons)
         current_memory = ltm.memory_text if ltm.memory_text else "(No memory yet)"
 
-        prompt = LONG_TERM_SYNTHESIS_PROMPT.format(
+        base_prompt = LONG_TERM_SYNTHESIS_PROMPT_COUNTER_NORM if getattr(self.task, 'ltm_counter_norm', False) else LONG_TERM_SYNTHESIS_PROMPT
+        prompt = base_prompt.format(
             n=n_games,
             current_memory=current_memory,
             lessons=lessons

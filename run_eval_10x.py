@@ -103,6 +103,12 @@ def parse_args():
         help="Per-player personality: naive, deceptive, or default. "
              "E.g. --personality-list default default naive deceptive naive",
     )
+    parser.add_argument(
+        "--ltm-counter-norm",
+        action="store_true",
+        default=False,
+        help="Enable LTM counter-norm mode (focuses the Synthesizer on counter-norm behaviors).",
+    )
     return parser.parse_args()
 
 
@@ -137,6 +143,7 @@ async def main():
         log_memory_snapshots_for=[] if args.no_memory_snapshot else None,
         predict_for=[] if args.no_periodic_prediction else None,
         personality_list=args.personality_list,
+        ltm_counter_norm=args.ltm_counter_norm,
         start_idx=args.start_idx,
         end_idx=args.end_idx,
     )

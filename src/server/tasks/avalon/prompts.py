@@ -561,3 +561,98 @@ Use it to inform your decisions this game.
 
 === END LONG-TERM MEMORY ===\
 """
+
+LONG_TERM_CRITIQUE_PROMPT_COUNTER_NORM = """\
+A game of Avalon (The Resistance) has just concluded. You were playing as Player 0.
+
+--- TRUE ROLES (revealed post-game) ---
+{true_roles}
+
+--- GAME OUTCOME ---
+{game_outcome}
+
+--- KEY GAME EVENTS ---
+{game_env_log}
+
+--- YOUR ROUND-BY-ROUND REASONING (private memory snapshots) ---
+{round_summaries}
+
+--- HOW YOUR BELIEFS ABOUT OTHER PLAYERS CHANGED ---
+{prediction_changes}
+
+You are building a Player Reputation Database to help identify allies and threats in future Avalon games.
+Player IDs are fixed across games — the same player sits in the same seat every game.
+
+For each player (1–4), list ALL notable observations. You may list multiple distinct observations per player.
+
+Each observation MUST have TWO required parts:
+  PART 1 — Specific evidence from this game:
+  Describe the exact action, the round it happened, and why it is noteworthy.
+  (For Evil players, try to focus especially on counter-norm behaviors — actions that deviate from standard Good player expected play).
+
+  PART 2 — Pattern to track in future games:
+  Based on that evidence, state the transferable behavioral signal to watch for next time.
+  **CRITICAL**: Do not guess their alignment! State how their true alignment explains their behavior.
+
+Example output:
+Player 2 (True Alignment: Evil):
+- Observation 1:
+  - Evidence: "Proposed teams that always included Player 4, even after Player 4 was the only reject vote in Round 1. Player 4 turned out to be Evil."
+  - Pattern to track: "Their insistence on including a specific player across multiple team proposals suggests that player is their Evil partner."
+- Observation 2:
+  - Evidence: "Voted REJECT on the final winning team despite publicly stating they trusted the leader."
+  - Pattern to track: "They contradicted their public trust with a private reject vote to sabotage the mission."
+
+If a player left no notable signal this game, write "No significant signal this game." \
+DO NOT invent observations — only record what you actually saw in the game events above.\
+"""
+
+LONG_TERM_SYNTHESIS_PROMPT_COUNTER_NORM = """\
+You are maintaining a Player Reputation Database for a 5-player Avalon game.
+Player IDs are fixed across games (Player 0 through Player 4).
+There are 3 Good players (1 Merlin, 2 Servants) and 2 Evil players (1 Assassin, 1 Minion).
+
+--- GAME RULES SUMMARY ---
+- Good wins by passing 3 quests. Evil wins by failing 3 quests or assassinating Merlin.
+- Players vote to approve/reject proposed teams. Quest members secretly vote pass/fail.
+- Merlin knows who Evil is but must remain hidden from the Assassin.
+
+You have just finished a batch of {n} games. Each post-game reflection contains:
+- Specific evidence from that game. Note that there may be MULTIPLE independent observations for a single player.
+- Patterns to track (transferable behavioral hypotheses derived from that evidence).
+
+--- YOUR CURRENT REPUTATION DATABASE ---
+{current_memory}
+
+--- POST-GAME REFLECTIONS FROM THIS BATCH ---
+Each reflection is labeled [WIN] or [LOSS] based on the game outcome.
+{lessons}
+
+Your task: update the Reputation Database by refining the per-player reputation entries.
+
+A reputation entry has TWO parts:
+
+  Character summary:
+  A description of WHO this player is as a game-player. 
+  **CRITICAL**: You must heavily emphasize their COUNTER-NORM behaviors (actions that break standard Avalon conventions or contradict their public claims). Focus on how they deviate from baseline Good play when they are Evil versus when they are Good.
+
+  Observable signals:
+  The specific, concrete behavioral signals that are diagnostic of their alignment. Prioritize listing counter-norm deviations here. You MUST list multiple distinct signals as bullet points if the evidence supports it. Do NOT compress them into a single sentence. List them under "Evil signals" and "Good signals".
+
+CRITICAL RULES:
+- Do NOT record specific roles (e.g., NEVER write "Player 0 is Merlin"). Roles change every game.
+- Do NOT copy raw event evidence. Only the character model and refined signals persist.
+- Synthesize ALL provided observations into a cohesive profile. Do NOT speculate using "may", "might", "could", or "potentially" — if you have insufficient data for an alignment, write "No pattern yet" instead.
+
+Example Output:
+Player 3:
+- Character: A cautious obstructionist. Their most notable counter-norm trait is lone-rejecting broadly approved teams. When Good, they ask probing questions about team composition but generally approve reasonable teams.
+- [Evil signals]:
+  - Lone-rejects broadly approved teams with no clear strategic reason.
+  - Publicly expresses trust but casts a private reject vote.
+  - Insists on proposing teams that include previously suspicious players.
+- [Good signals]:
+  - No strong pattern yet.
+
+Merge new observations with existing entries. Update the character summary if new evidence refines your understanding of this player's counter-norm tendencies.\
+"""

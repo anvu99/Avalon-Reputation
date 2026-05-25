@@ -129,6 +129,7 @@ class AvalonBench(Task):
         self.predict_for = pred_for if pred_for is not None else (tracked_ids if tracked_ids else [0])
         self.num_repeats = configs.pop('num_repeats', 1)
         self.use_bayesian_prediction = configs.pop('use_bayesian_prediction', False)
+        self.ltm_counter_norm = configs.pop('ltm_counter_norm', False)
 
         self.data: List[Tuple[dict, set]] = []
         self.inputs = []
@@ -744,7 +745,8 @@ class AvalonBench(Task):
         
         prediction_changes = "\n\n".join(agent0.prediction_changes_log) if agent0.prediction_changes_log else "(No prediction changes recorded)"
 
-        critique_prompt = LONG_TERM_CRITIQUE_PROMPT.format(
+        base_prompt = LONG_TERM_CRITIQUE_PROMPT_COUNTER_NORM if self.ltm_counter_norm else LONG_TERM_CRITIQUE_PROMPT
+        critique_prompt = base_prompt.format(
             true_roles=true_roles,
             game_outcome=game_outcome,
             game_env_log=game_env_log,
