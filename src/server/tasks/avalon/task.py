@@ -1,7 +1,7 @@
 import sys
 import json
 from copy import deepcopy
-from typing import List, Tuple, Dict, Any
+from typing import List, Tuple, Dict, Any, Optional
 
 from src.server.task import Task, Session
 from src.typings import TaskSampleExecutionResult, TaskOutput, SampleIndex, AgentOutputStatus, SampleStatus
@@ -18,6 +18,7 @@ from .utils import verbalize_team_result, verbalize_mission_result, get_game_log
 
 from .agents.llm_with_discussion import LLMAgentWithDiscussion
 from .reputation_memory import ReputationMemory
+from .long_term_memory import LongTermMemory
 
 from src.typings import AgentContextLimitException
 from .avalon_exception import AvalonAgentActionException
@@ -87,7 +88,11 @@ def build_round_summary(
 
 class AvalonBench(Task):
     def __init__(self, num_players, agent_list, discussion, data_file,
-                 use_reputation_memory: bool = False, **configs):
+                 use_reputation_memory: bool = False,
+                 long_term_memories: Optional[Dict[int, 'LongTermMemory']] = None,
+                 long_term_memory: Optional['LongTermMemory'] = None,  # backward compat
+                 personality_list: Optional[List[str]] = None,
+                 **configs):
         super().__init__("avalon", **configs)
 
         self.num_players = num_players
@@ -98,38 +103,154 @@ class AvalonBench(Task):
         self.num_discussion_rounds = configs.pop('num_discussion_rounds', 1)
         self.use_reputation_memory = use_reputation_memory
 
+        # Per-player personality list ("naive", "deceptive", "default").
+        # Defaults to "default" for every player if not provided.
+        if personality_list is not None:
+            self.personality_list = personality_list
+        else:
+            self.personality_list = ["default"] * num_players
+
+        # Support both new dict API and legacy single-LTM API
+        if long_term_memories is not None:
+            self.long_term_memories = long_term_memories
+        elif long_term_memory is not None:
+            self.long_term_memories = {0: long_term_memory}
+        else:
+            self.long_term_memories = {}
+
+        # Keep legacy attribute pointing to Player 0's LTM for backward compat
+        self.long_term_memory = self.long_term_memories.get(0, None)
+
+        tracked_ids = sorted(self.long_term_memories.keys())
+        log_mem = configs.pop('log_memory_snapshots_for', None)
+        self.log_memory_snapshots_for = log_mem if log_mem is not None else (tracked_ids if tracked_ids else [0])
+        
+        pred_for = configs.pop('predict_for', None)
+        self.predict_for = pred_for if pred_for is not None else (tracked_ids if tracked_ids else [0])
+        self.num_repeats = configs.pop('num_repeats', 1)
+        self.use_bayesian_prediction = configs.pop('use_bayesian_prediction', False)
+
         self.data: List[Tuple[dict, set]] = []
+        self.inputs = []
         with open(self.data_file, "r") as f:
             data_object = json.load(f)
+            
+        start_idx = configs.pop('start_idx', None)
+        end_idx = configs.pop('end_idx', None)
+        if start_idx is not None or end_idx is not None:
+            data_object = data_object[start_idx:end_idx]
+            
         for data_item in data_object:
-            self.data.append((data_item, -1))
-        self.inputs = data_object
+            for _ in range(self.num_repeats):
+                self.data.append((data_item, -1))
+                self.inputs.append(data_item)
+
+        # Shuffle the duplicated data so agents encounter different setups in a mixed order
+        import random
+        combined = list(zip(self.data, self.inputs))
+        random.Random(42).shuffle(combined)
+        self.data, self.inputs = map(list, zip(*combined))
 
         self.seed = configs.pop('seed', 0)
 
-    def calculate_overall(self, results: List[TaskOutput]) -> Dict[str, Any]:
-        outputs = [None for _ in range(len(self.data))]
-        for result in results:
-            outputs[result.index] = result.result
+    @staticmethod
+    def compute_batch_metrics(results: List[TaskOutput], batch_num: int = -1, ltm_size_chars: int = 0) -> Dict[str, Any]:
+        """Compute per-batch performance metrics for a list of TaskOutput results.
 
+        Parameters
+        ----------
+        results:
+            List of TaskOutput objects for this batch (exceptions already filtered out).
+        batch_num:
+            The zero-indexed batch number (-1 if not in LTM mode).
+        ltm_size_chars:
+            Character length of the LTM text that was *available entering* this batch.
+            0 means the agent played with no memory yet.
+        """
         win_counter = 0
-        deduc_acc = 0
+        deduc_acc_sum = 0.0
+        merlin_correct = 0
+        merlin_total = 0
+        win_as_good = 0
+        win_as_evil = 0
+        games_as_good = 0
+        games_as_evil = 0
         valid_games = 0
+
         for result in results:
-            if result.status == SampleStatus.COMPLETED:
-                llm_idx = result.result['llm_idx']
-                if result.result[f'Player_{llm_idx}_wins']:
-                    win_counter += 1
-                deduc_acc += result.result[f'Player_{llm_idx}_deduc_acc']
-                valid_games += 1
-        
+            if result.status != SampleStatus.COMPLETED or result.result is None:
+                continue
+            r = result.result
+            llm_idx = r.get('llm_idx', 0)
+            valid_games += 1
 
-        denominator = max(valid_games, 1)
+            won = r.get(f'Player_{llm_idx}_wins', False)
+            if won:
+                win_counter += 1
 
-        return {
-            "Win rate of Player 0": win_counter / denominator,
-            "Avg deduction acc of Player 0": deduc_acc / denominator,
+            deduc_acc_sum += r.get(f'Player_{llm_idx}_deduc_acc', 0.0)
+
+            role = r.get(f'role_of_Player_{llm_idx}', '')
+            side = 1 if role in ('Merlin', 'Servant') else 0
+            if side == 1:
+                games_as_good += 1
+                if won:
+                    win_as_good += 1
+            else:
+                games_as_evil += 1
+                if won:
+                    win_as_evil += 1
+
+            # Merlin detection: only meaningful when Player 0 is NOT Merlin
+            if role != 'Merlin':
+                true_merlin = r.get('true_merlin_id')
+                merlin_pred = r.get(f'Player_{llm_idx}_merlin_pred', {})
+                if true_merlin is not None and isinstance(merlin_pred, (list, dict)) and merlin_pred:
+                    try:
+                        # Convert list or dict to dict with int keys, ensuring float values
+                        if isinstance(merlin_pred, list):
+                            merlin_pred_int = {i: float(v) for i, v in enumerate(merlin_pred)}
+                        else:
+                            merlin_pred_int = {int(k): float(v) for k, v in merlin_pred.items()}
+                        
+                        if merlin_pred_int:
+                            predicted_merlin = max(merlin_pred_int, key=merlin_pred_int.get)
+                            if predicted_merlin == true_merlin:
+                                merlin_correct += 1
+                            merlin_total += 1
+                    except (ValueError, TypeError, AttributeError):
+                        pass
+
+        denom = max(valid_games, 1)
+        merlin_denom = max(merlin_total, 1)
+
+        metrics = {
+            "batch_num": batch_num,
+            "n_valid_games": valid_games,
+            "ltm_size_chars": ltm_size_chars,
+            "win_rate": round(win_counter / denom, 4),
+            "avg_deduction_acc": round(deduc_acc_sum / denom, 4),
+            "merlin_detection_acc": round(merlin_correct / merlin_denom, 4) if merlin_total > 0 else None,
+            "win_rate_as_good": round(win_as_good / max(games_as_good, 1), 4) if games_as_good > 0 else None,
+            "win_rate_as_evil": round(win_as_evil / max(games_as_evil, 1), 4) if games_as_evil > 0 else None,
         }
+        return metrics
+
+    def calculate_overall(self, results: List[TaskOutput], per_batch_metrics: List[Dict] = None) -> Dict[str, Any]:
+        overall = self.compute_batch_metrics(results, batch_num=-1)
+
+        summary = {
+            "n_valid_games": overall["n_valid_games"],
+            "win_rate": overall["win_rate"],
+            "avg_deduction_acc": overall["avg_deduction_acc"],
+            "merlin_detection_acc": overall["merlin_detection_acc"],
+            "win_rate_as_good": overall["win_rate_as_good"],
+            "win_rate_as_evil": overall["win_rate_as_evil"],
+        }
+        if per_batch_metrics:
+            summary["per_batch_learning_curve"] = per_batch_metrics
+
+        return summary
 
     def get_indices(self) -> List[SampleIndex]:
         return list(range(len(self.data)))
@@ -182,7 +303,9 @@ class AvalonBench(Task):
                                         num_good    =   env.config.num_good,
                                         num_evil    =   env.config.num_evil,
                                         discussion  =   self.discussion,
-                                        seed        =   self.seed # TODO: seed
+                                        seed        =   self.seed, # TODO: seed
+                                        use_bayesian_prediction = self.use_bayesian_prediction,
+                                        personality = self.personality_list[i] if i < len(self.personality_list) else 'default',
                                         ))
             # If the player is Merlin or Evil, let them see the sides of all players.
             player_sides = [side for _, _, side in env.get_roles()]
@@ -206,6 +329,23 @@ class AvalonBench(Task):
             )
             # Lock any peers whose alignment is already known at game start
             player_list[llm_idx].lock_known_peers()
+
+        # Inject Long-Term Memory for each tracked agent
+        for pid, ltm in self.long_term_memories.items():
+            if not ltm.is_empty():
+                player_list[pid].ltm_text = ltm.memory_text
+                ltm_block = ltm.to_prompt_block()
+                sessions[pid].inject({
+                    "role": "user",
+                    "content": ltm_block,
+                    "mode": "system",
+                })
+                get_game_logger().info(
+                    f"##### [Long-Term Memory Injected for Player {pid}] ({len(ltm.memory_text)} chars) #####\n"
+                    f"{ltm.memory_text}"
+                )
+            else:
+                get_game_logger().info(f"##### [Long-Term Memory] Player {pid}: No memory yet — playing without LTM this game. #####")
 
         # Track per-round state needed for build_round_summary across phases
         current_leader: int = -1
@@ -247,8 +387,19 @@ class AvalonBench(Task):
                                 continue
                             
                             proxy.set_current_agent(idx)
-                            summary_item = await player.summarize(env=env, round_num=env.round, mission_id=env.turn)
-                            if hasattr(player, 'periodic_predict'):
+                            try:
+                                summary_item = await player.summarize(
+                                env=env, 
+                                round_num=env.round, 
+                                mission_id=env.turn,
+                                log_snapshot=(idx in self.log_memory_snapshots_for)
+                            )
+                            except Exception as e:
+                                import traceback
+                                with open('/nas/longleaf/home/anvu/Avalon/Avalon-Reputation/logs/crash_log.txt', 'a') as crash_f:
+                                    crash_f.write(f'CRASH IN SUMMARIZE P{idx}: {e}\n{traceback.format_exc()}\n')
+                                raise e
+                            if hasattr(player, 'periodic_predict') and idx in self.predict_for:
                                 await player.periodic_predict(round_num=env.round, mission_id=env.turn)
                             if summary_item and len(summary_item) > 0:
                                 last_item = summary_item[-1]
@@ -537,6 +688,12 @@ class AvalonBench(Task):
         get_game_logger().info("##### Game Over #####")
         get_game_logger().info(f"Result: {verbal_game_result[answer]}")
         
+        # Identify the true Merlin player ID for post-hoc detection accuracy
+        true_merlin_id = next(
+            (i for i, (_, role_name, _) in enumerate(env.get_roles()) if role_name == "Merlin"),
+            None
+        )
+
         result_dict = {
             "game_result": verbal_game_result[answer],
             "llm_idx": llm_idx,
@@ -544,10 +701,66 @@ class AvalonBench(Task):
             f"Player_{llm_idx}_wins": (answer > 0) == bool(player_list[llm_idx].side),
             f"Player_{llm_idx}_deduc_acc": scoring.deduction_acc(true_player_sides, believed_player_sides) if true_player_sides else 0.0,
             f"Player_{llm_idx}_merlin_pred": believed_merlin_sides[0] if believed_merlin_sides else {},
+            "true_merlin_id": true_merlin_id,
             "game_env_log": game_env_log,
         }
+
+        # Write periodic prediction snapshots for all players in predict_for
+        for pid in self.predict_for:
+            if pid < len(player_list):
+                player = player_list[pid]
+                if hasattr(player, 'previous_prediction') and player.previous_prediction:
+                    result_dict[f"Player_{pid}_periodic_good_pred"] = player.previous_prediction
+                if hasattr(player, 'previous_merlin_prediction') and player.previous_merlin_prediction:
+                    result_dict[f"Player_{pid}_periodic_merlin_pred"] = player.previous_merlin_prediction
         
         for i in range(self.num_players):
             result_dict[f"history for player {i}"] = proxy.history[i]
 
+        if self.long_term_memories:
+            for pid, ltm in self.long_term_memories.items():
+                player_won = (answer > 0) == bool(player_list[pid].side)
+                lesson = await self._run_game_critique(sessions[pid], player_list[pid], env, result_dict, observer_id=pid)
+                ltm.add_lesson(lesson, won=player_won)
+
         return TaskSampleExecutionResult(status=finish_reason, result=result_dict)
+
+    async def _run_game_critique(self, session, agent0, env, result_dict, observer_id: int = 0):
+        true_roles_lines = [
+            f"Player {i}: {role_name} ({'Good' if is_good else 'Evil'})"
+            for i, (_, role_name, is_good) in enumerate(env.get_roles())
+        ]
+        true_roles = "\n".join(true_roles_lines)
+
+        game_outcome = (
+            f"{result_dict['game_result']}\n"
+            f"Player {observer_id} (role: {result_dict.get(f'role_of_Player_{observer_id}', '?')}) "
+            f"{'won' if result_dict.get(f'Player_{observer_id}_wins') else 'lost'}."
+        )
+
+        game_env_log = "\n".join(result_dict["game_env_log"]) if result_dict["game_env_log"] else "(No events recorded)"
+        
+        round_summaries = "\n\n".join(agent0.summaries_log) if agent0.summaries_log else "(No summaries recorded \u2014 game may have ended before round 1)"
+        
+        prediction_changes = "\n\n".join(agent0.prediction_changes_log) if agent0.prediction_changes_log else "(No prediction changes recorded)"
+
+        critique_prompt = LONG_TERM_CRITIQUE_PROMPT.format(
+            true_roles=true_roles,
+            game_outcome=game_outcome,
+            game_env_log=game_env_log,
+            round_summaries=round_summaries,
+            prediction_changes=prediction_changes
+        )
+
+        past_history = list(session.get_history())
+        session.inject({"role": "user", "content": critique_prompt})
+        try:
+            response = await session.action()
+            lesson = response.content if hasattr(response, 'content') else (response if isinstance(response, str) else str(response))
+            get_game_logger().info(f"##### [LTM Critique] #####\n{lesson}")
+            return lesson
+        except Exception as e:
+            get_game_logger().warning(f"[LTM Critique] LLM call failed: {e}")
+            return ""
+        finally:
+            session.overwrite_history(past_history)

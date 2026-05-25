@@ -7,10 +7,13 @@ from ..wrapper import AvalonSessionWrapper, Session
 from ..prompts import (
     INTRODUCTION, INFO_ROLE, INFO_YOUR_ROLE, REVEAL_PROMPTS,
     CHOOSE_TEAM_LEADER, CHOOSE_TEAM_ACTION, VOTE_TEAM_ACTION, VOTE_MISSION_ACTION,
-    ASSASSINATION_PHASE, COTHOUGHT_PROMPT, DISCUSSION_SCAFFOLD,
+    ASSASSINATION_PHASE, COTHOUGHT_PROMPT, PERSONALITY_PROMPTS, DISCUSSION_SCAFFOLD,
     DISCUSSION_GOOD_PLAYER, DISCUSSION_EVIL_PLAYER, DISCUSSION_SUFFIX,
     REPUTATION_MEMORY_HEADER, REPUTATION_UPDATE_PROMPT, REPUTATION_MEMORY_CONTEXT_PROMPT,
     TUTORIAL_STRATEGIES_PROMPTS_ZERO_SHOT, SUMMARIZE_PROMPT, PERIODIC_PREDICTION_PROMPT,
+    PERIODIC_MERLIN_PREDICTION_PROMPT, STRATEGIC_MEMORY_HEADER, EMPTY_MEMORY_NOTICE, CONFIRMED_PEERS_NOTICE_HEADER, CONFIRMED_PEERS_NOTICE_ITEM, CONFIRMED_PEERS_NOTICE_FOOTER, QUERY_BELIEF_PROMPT, DISCUSSION_LEADER_PROMPT,
+    BAYESIAN_PERIODIC_PREDICTION_PROMPT, BAYESIAN_PERIODIC_MERLIN_PREDICTION_PROMPT,
+    LONG_TERM_MEMORY_INJECTION_PROMPT
 )
 from copy import deepcopy
 from ..utils import verbalize_team_result, verbalize_mission_result
@@ -31,25 +34,40 @@ class LLMAgentWithDiscussion(Agent):
         self.side = side # 1 for good, 0 for evil
         self.session = session
         self.discussion = kwargs.pop('discussion', None)
+        # Personality: one of "naive", "deceptive", "default"
+        self.personality = kwargs.pop('personality', 'default')
+        if self.personality not in PERSONALITY_PROMPTS:
+            self.personality = 'default'
         for key, value in kwargs.items():
             setattr(self, key, value)
 
         self.seed = seed
 
         self.config = config
+        self.use_bayesian_prediction = kwargs.get('use_bayesian_prediction', False)
 
         # Reputation memory — None unless activated for this agent by task.py
         self.reputation_memory: Optional[ReputationMemory] = None
 
         # Track previous round's prediction
         self.previous_prediction: dict = {}
+        self.previous_merlin_prediction: dict = {}
+        self.prediction_changes_log: List[str] = []
+
+        self.summaries_log: List[str] = []
+        self.ltm_text: str = ""
 
     def __str__(self):
         return self.name
 
     def __repr__(self):
         return self.name
-    
+
+    def get_cothought(self) -> str:
+        """Return COTHOUGHT_PROMPT with the personality CoT addendum appended."""
+        cot_addon = PERSONALITY_PROMPTS.get(self.personality, PERSONALITY_PROMPTS['default'])['cot']
+        return COTHOUGHT_PROMPT + cot_addon
+
     def see_sides(self, sides):
         self.player_sides = sides
     
@@ -117,80 +135,128 @@ class LLMAgentWithDiscussion(Agent):
             })
             self.system_info += '\n\n' + tutorial[0]
 
-    async def summarize(self, round_num: int = 0, mission_id: int = 0, **kwargs) -> None:
+        # Inject personality prefix if set
+        personality_prefix = PERSONALITY_PROMPTS.get(self.personality, PERSONALITY_PROMPTS['default'])['prefix']
+        if personality_prefix:
+            self.session.inject({
+                "role": "user",
+                "content": personality_prefix,
+                "mode": "system",
+            })
+            self.system_info += '\n\n' + personality_prefix
+            get_game_logger().info(f"[Personality] Player {self.id} assigned personality='{self.personality}'")
+
+    async def summarize(self, round_num: int = 0, mission_id: int = 0, log_snapshot: bool = True, **kwargs) -> None:
         summary = await self.session.action({
             "role": "user",
             "content": SUMMARIZE_PROMPT,
             "mode": "summarize"
         })
-        get_game_logger().info(f"##### Memory Snapshot (Mission {mission_id}, Round {round_num}) #####\n{summary}")
+        self.summaries_log.append(f"[Mission {mission_id}, Round {round_num}]\n{summary}")
+        if log_snapshot:
+            get_game_logger().info(f"##### Memory Snapshot (Mission {mission_id}, Round {round_num}) #####\n{summary}")
         self.session.overwrite_history([])
         self.session.inject({
             'role': "user",
             'content': self.system_info
         })
+        if self.ltm_text:
+            self.session.inject({
+                'role': "user",
+                'content': LONG_TERM_MEMORY_INJECTION_PROMPT.format(memory_text=self.ltm_text)
+            })
         self.session.inject({
             'role': "user",
-            'content': f"=== YOUR STRATEGIC MEMORY UP TO THIS POINT ===\n{summary}\n=============================================="
+            'content': STRATEGIC_MEMORY_HEADER.format(summary=summary)
         })
         return self.session.get_history()
 
     async def periodic_predict(self, round_num: int = 0, mission_id: int = 0, **kwargs) -> None:
-        merlin_prompt = ""
-        merlin_format = ""
-        if self.role_name != "Merlin":
-            merlin_prompt = "Also, output your belief that each player is Merlin as a probability within [0, 1].\n"
-            merlin_format = "\nMerlin: {0: score, 1: score, 2: score, 3: score, 4: score}"
-            
-        prompt = PERIODIC_PREDICTION_PROMPT.format(
-            previous_prediction=self.previous_prediction if self.previous_prediction else "{}",
-            self_id=self.id,
-            merlin_prompt=merlin_prompt,
-            merlin_format=merlin_format
-        )
+        """Run two separate scratch-context LLM calls: one for Good/Evil prediction,
+        one (non-Merlin only) for Merlin identity prediction."""
 
         past_history = list(self.session.session.history)
-        self.session.session.history = []
 
-        self.session.session.inject({
-            "role": "user",
-            "content": prompt,
-        })
-
-        try:
-            response = await self.session.session.action()
-            raw = response.content if response.content else ""
-        except Exception as e:
-            get_game_logger().warning(f"[Periodic Prediction] LLM call failed: {e}")
-            raw = ""
-        finally:
-            self.session.session.history = list(past_history)
-
-        prediction_dict = {}
-        changes_text = ""
-
-        if "Answer:" in raw:
-            answer_part = raw.split("Answer:")[1]
-            if "Changes:" in answer_part:
-                answer_part = answer_part.split("Changes:")[0]
-            answer_part = answer_part.strip()
+        # ------------------------------------------------------------------
+        # Helper: run one scratch-context call and return raw text
+        # ------------------------------------------------------------------
+        async def _scratch_call(prompt_text: str) -> str:
+            self.session.session.inject({"role": "user", "content": prompt_text})
             try:
-                dict_start = answer_part.find('{')
-                dict_end = answer_part.rfind('}') + 1
-                if dict_start != -1 and dict_end != -1:
-                    dict_str = answer_part[dict_start:dict_end]
-                    prediction_dict = eval(dict_str)
+                response = await self.session.session.action()
+                return response.content if response.content else ""
+            except Exception as e:
+                get_game_logger().warning(f"[Periodic Prediction] LLM call failed: {e}")
+                return ""
+            finally:
+                self.session.session.history = list(past_history)
+
+        # ------------------------------------------------------------------
+        # Helper: extract a {{int: float}} dict from any raw LLM response
+        # ------------------------------------------------------------------
+        def _parse_dict(raw: str) -> dict:
+            match = re.search(r'\{[^{}]+\}', raw)
+            if not match:
+                return {}
+            try:
+                parsed = eval(match.group())
+                if isinstance(parsed, dict) and all(isinstance(k, int) for k in parsed):
+                    return parsed
             except Exception as e:
                 get_game_logger().warning(f"[Periodic Prediction] Failed to parse dict: {e}")
+            return {}
 
-        if "Changes:" in raw:
-            changes_text = raw.split("Changes:")[1].strip()
+        # ------------------------------------------------------------------
+        # Call 1: Good/Evil alignment
+        # ------------------------------------------------------------------
+        past_changes_str = "\n".join(self.prediction_changes_log) if self.prediction_changes_log else "(None recorded yet)"
+        
+        if self.use_bayesian_prediction:
+            good_prompt_template = BAYESIAN_PERIODIC_PREDICTION_PROMPT
+        else:
+            good_prompt_template = PERIODIC_PREDICTION_PROMPT
 
+        good_prompt = good_prompt_template.format(
+            previous_prediction=self.previous_prediction if self.previous_prediction else "{}",
+            self_id=self.id,
+            past_changes_log=past_changes_str,
+        )
+        raw_good = await _scratch_call(good_prompt)
+
+        prediction_dict = _parse_dict(raw_good)
         if prediction_dict:
             self.previous_prediction = prediction_dict
 
-        get_game_logger().info(f"##### Periodic Prediction (Mission {mission_id}, Round {round_num}) #####")
-        get_game_logger().info(f"[Prediction] {self.previous_prediction}")
+        changes_text = ""
+        if "Changes:" in raw_good:
+            changes_text = raw_good.split("Changes:")[1].strip()
+            if changes_text and not changes_text.startswith("(omit the Changes"):
+                self.prediction_changes_log.append(f"[Mission {mission_id}, Round {round_num}]\n{changes_text}")
+
+        # ------------------------------------------------------------------
+        # Call 2: Merlin identity (non-Merlin roles only)
+        # ------------------------------------------------------------------
+        merlin_dict = {}
+        if self.role_name != "Merlin":
+            if self.use_bayesian_prediction:
+                merlin_prompt = BAYESIAN_PERIODIC_MERLIN_PREDICTION_PROMPT.format(
+                    self_id=self.id,
+                    previous_prediction=self.previous_merlin_prediction if self.previous_merlin_prediction else "{}"
+                )
+            else:
+                merlin_prompt = PERIODIC_MERLIN_PREDICTION_PROMPT.format(self_id=self.id)
+            raw_merlin = await _scratch_call(merlin_prompt)
+            merlin_dict = _parse_dict(raw_merlin)
+            if merlin_dict:
+                self.previous_merlin_prediction = merlin_dict
+
+        # ------------------------------------------------------------------
+        # Log
+        # ------------------------------------------------------------------
+        get_game_logger().info(f"##### Periodic Prediction by Player {self.id} (Mission {mission_id}, Round {round_num}) #####")
+        get_game_logger().info(f"[Good/Evil] {self.previous_prediction}")
+        if self.previous_merlin_prediction:
+            get_game_logger().info(f"[Merlin]    {self.previous_merlin_prediction}")
         if changes_text:
             get_game_logger().info(f"[Changes]\n{changes_text}")
     async def observe_mission(self, team, mission_id, num_fails, votes, outcome, **kwargs) -> None:
@@ -209,21 +275,23 @@ class LLMAgentWithDiscussion(Agent):
         if self.reputation_memory is None:
             return
 
-        current_memory = self.reputation_memory.to_prompt_block() or "(no observations recorded yet)"
+        current_memory = self.reputation_memory.to_prompt_block() or EMPTY_MEMORY_NOTICE
 
         # Build the locked-peers notice block for the prompt
         locked_ids = self.reputation_memory.locked_peer_ids()
         if locked_ids:
-            locked_lines = [
-                "\n--- CONFIRMED Peers (semantic belief is ground truth — DO NOT update alignment/confidence/justification) ---"
-            ]
+            locked_lines = [CONFIRMED_PEERS_NOTICE_HEADER]
             for pid in locked_ids:
                 pr = self.reputation_memory.peers[pid]
                 locked_lines.append(
-                    f"  Player {pid}: {pr.semantic.alignment_role} "
-                    f"(confidence {pr.semantic.confidence_score}/5) — {pr.semantic.justification}"
+                    CONFIRMED_PEERS_NOTICE_ITEM.format(
+                        pid=pid,
+                        alignment_role=pr.semantic.alignment_role,
+                        confidence_score=pr.semantic.confidence_score,
+                        justification=pr.semantic.justification
+                    )
                 )
-            locked_lines.append("--- End CONFIRMED Peers ---\n")
+            locked_lines.append(CONFIRMED_PEERS_NOTICE_FOOTER)
             locked_peers_notice = "\n".join(locked_lines)
         else:
             locked_peers_notice = "\n"
@@ -362,9 +430,10 @@ class LLMAgentWithDiscussion(Agent):
         })
     
     async def get_believed_sides(self, num_players: int, **kwargs) -> List[float]:
+        past_changes_str = "\n".join(self.prediction_changes_log) if self.prediction_changes_log else "(None recorded yet)"
         input = {
             "role": "user",
-            "content": f"To what extend do you believe each player to be Good, from Player 0 to Player {self.num_players - 1}? Please output probabilities within [0, 1] and round to two decimal places. If you are not sure, you can simply output 0.5.",
+            "content": QUERY_BELIEF_PROMPT.format(max_player_id=self.num_players - 1, past_changes_log=past_changes_str),
             "mode": "get_believed_sides",
             "role_name": self.role_name
         }
@@ -411,7 +480,7 @@ class LLMAgentWithDiscussion(Agent):
         else:
             self.session.inject({
                 "role": "user",
-                "content": f"Player {team_leader_id} is the quest leader for this round. " + discussion_guidance
+                "content": DISCUSSION_LEADER_PROMPT.format(team_leader_id=team_leader_id) + discussion_guidance
             })
 
         dialogue = await self.session.action(receiver="all")
@@ -426,7 +495,7 @@ class LLMAgentWithDiscussion(Agent):
         self.inject_reputation_context(label="propose_team")
         content_prompt = CHOOSE_TEAM_ACTION.format(team_size, self.num_players-1)
 
-        thought = COTHOUGHT_PROMPT
+        thought = self.get_cothought()
         input = {
             "role": "user",
             "content": content_prompt + '\n' + thought,
@@ -450,6 +519,19 @@ class LLMAgentWithDiscussion(Agent):
                     proposed_team = eval(proposed_team)
                 except Exception:
                     proposed_team = list(range(team_size))
+            
+            if not isinstance(proposed_team, list) or len(proposed_team) != team_size:
+                import random
+                if not isinstance(proposed_team, list):
+                    proposed_team = list(proposed_team) if isinstance(proposed_team, (set, frozenset, tuple)) else []
+                proposed_team = list(set([x for x in proposed_team if isinstance(x, int) and 0 <= x < self.num_players]))
+                while len(proposed_team) > team_size:
+                    proposed_team.pop()
+                while len(proposed_team) < team_size:
+                    candidate = random.randint(0, self.num_players - 1)
+                    if candidate not in proposed_team:
+                        proposed_team.append(candidate)
+
         proposed_team = frozenset(proposed_team)
         get_game_logger().info(f"Proposed Team: {proposed_team}")
 
@@ -466,7 +548,7 @@ class LLMAgentWithDiscussion(Agent):
         self.inject_reputation_context(label="vote_on_team")
         content_prompt = VOTE_TEAM_ACTION.format(list(team))
         
-        thought = COTHOUGHT_PROMPT
+        thought = self.get_cothought()
         input = {
             "role": "user",
             "content": content_prompt + "\n" + thought,
@@ -496,7 +578,7 @@ class LLMAgentWithDiscussion(Agent):
         self.inject_reputation_context(label="vote_on_mission")
         content_prompt = VOTE_MISSION_ACTION.format(list(team))
 
-        thought = COTHOUGHT_PROMPT
+        thought = self.get_cothought()
         input = {
             "role": "user",
             "content": content_prompt + "\n" + thought,
@@ -528,7 +610,7 @@ class LLMAgentWithDiscussion(Agent):
             raise ValueError("Only the Assassin can assassinate.")
         self.inject_reputation_context(label="assassinate")
 
-        thought = COTHOUGHT_PROMPT
+        thought = self.get_cothought()
         input = {
             "role": "user",
             "content": ASSASSINATION_PHASE.format(self.num_players-1) + "\n" + thought,

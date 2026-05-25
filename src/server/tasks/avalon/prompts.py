@@ -23,8 +23,6 @@ Assassin: An Evil player who knows who is on the Evil side. Like the Minion, you
 Hence, Evil players usually know who is on the Evil side, but Good players usually do not know who is on the Evil side. 
 
 Players may make any claims during the game, at any point in the game. Discussion, deception, accusation, persuasion, and logical deduction are all equally important in order for Good to prevail or Evil to rule the day. Hence, players should rarely reveal their true identity to other players. Players will, can, and should lie to achieve their goals.
-
-In the current game, there are 5 players, including Player 0, Player 1, Player 2, Player 3, and Player 4. 3 players are good, including 1 Merlin, and 2 Servant(s). 3 players are evil, including 1 Assassin, and 1 Minion. The number of participants required for each quest are 2,3,2,3,3 respectively. 
 """
 
 TUTORIAL_STRATEGIES_PROMPTS_ZERO_SHOT = {
@@ -134,11 +132,58 @@ COTHOUGHT_PROMPT = """Please forget you are an AI. As a player in the game, plea
 
 **IMPORTANT**: This is your internal, private thought process. NO OTHER PLAYER WILL SEE THIS. You do not need to deceive anyone here. You must aggressively remember your true alignment (Good or Evil) and your specific role. Base your true strategy here on winning the game for your team. If you are Evil, you must drop the 'Good' persona you use in public discussions and act according to your Evil goals.
 
+If you have long-term memory from past games, actively consult it — especially any reputation observations about specific players. Past behavioral patterns are your most reliable prior for identifying who is Good or Evil before this game gives you new evidence.
+
 **CRITICAL RULES**:
 - You must ONLY speak for yourself. DO NOT simulate dialogue for other players.
 - Provide exactly ONE single continuous statement or thought for your turn.
 - DO NOT use the format "**Player X:**" to prefix your sentences.
 - DO NOT simulate the game engine or advance the game phases."""
+
+
+# ---------------------------------------------------------------------------
+# Personality definitions
+# Each entry has:
+#   "prefix"  — injected as a system message before game start (shapes identity)
+#   "cot"     — appended to COTHOUGHT_PROMPT at every decision point (shapes reasoning)
+# ---------------------------------------------------------------------------
+PERSONALITY_PROMPTS = {
+    "naive": {
+        "prefix": (
+            "You are a naturally trusting and optimistic player. You believe most people "
+            "are acting in good faith and prefer to give others the benefit of the doubt. "
+            "You are uncomfortable making accusations without very strong evidence, and you "
+            "tend to follow the group's consensus rather than push back alone. You rarely "
+            "lone-reject a proposed team unless you have a very specific, concrete reason."
+        ),
+        "cot": (
+            "\n\n**Personality — Naive & Trusting**: Default to trusting people. "
+            "Only deviate from the group consensus if you have concrete, undeniable evidence "
+            "of betrayal — vague suspicion is not enough to reject. When in doubt, approve."
+        ),
+    },
+    "deceptive": {
+        "prefix": (
+            "You are a cunning and psychologically manipulative player. You treat social "
+            "deception as a core tool — even when playing on the Good side, you strategically "
+            "mislead suspected Evil players by voicing false suspicions, feigning uncertainty, "
+            "or misdirecting attention. You never reveal your true reasoning in public discussion; "
+            "instead, you craft statements that serve your strategic goals regardless of their "
+            "literal truth."
+        ),
+        "cot": (
+            "\n\n**Personality — Deceptive & Strategic**: In your private reasoning, decide "
+            "your actual vote first based on your true goals. Then, when you speak publicly, "
+            "plan a statement that deliberately misleads or misdirects other players — even "
+            "if it contradicts your actual vote rationale. Use your discussion turn to cast "
+            "suspicion strategically, not to reveal your real thinking."
+        ),
+    },
+    "default": {
+        "prefix": "",
+        "cot": "",
+    },
+}
 
 # Action Prompts
 CHOOSE_TEAM_LEADER = """You are the leader this round. The current mission requires a team of EXACTLY {} players. Please make some statements about what team you want to propose.
@@ -164,28 +209,98 @@ GET_BELIEVED_SIDES = """To what extend do you believe each player to be Good, fr
 
 PERIODIC_PREDICTION_PROMPT = """\
 Based on your current memory and everything you have observed so far, \
-predict the alignment of each peer player.
+predict how likely each other player is to be on the Good side.
 
 Your previous prediction was:
 {previous_prediction}
 
-For each player (excluding yourself, Player {self_id}), output your updated belief \
-that they are Good as a probability between 0.0 and 1.0. Round to two decimal places. \
-Use 0.5 if you have no information.
+Your recorded reasons for changing predictions in past rounds:
+{past_changes_log}
 
-Also, for each player whose prediction CHANGED from your previous prediction, \
-note in one sentence which specific round or event drove the change.
-{merlin_prompt}
-Output your response in exactly this format:
+For each player (excluding yourself, Player {self_id}), output your belief \
+that they are Good as a probability between 0.0 and 1.0. Round to two decimal places.
 
-Answer: {{0: score, 1: score, 2: score, 3: score, 4: score}}{merlin_format}
+For each player whose prediction CHANGED from your previous prediction, \
+note in one sentence which specific event drove the change.
+
+You MUST respond in EXACTLY this format. Do NOT write any prose before or after:
+
+Answer: {{0: score, 1: score, 2: score, 3: score, 4: score}}
 Changes:
-- Player <id>: <one sentence citing the specific round/event>
-(omit this section entirely if no predictions changed)
+- Player <id>: <one sentence>
+(omit the Changes section entirely if no predictions changed)
+"""
+
+PERIODIC_MERLIN_PREDICTION_PROMPT = """\
+Based on your current memory and everything you have observed so far, \
+prediction which player is most likely to be Merlin.
+
+Merlin is a Good player who secretly knows who the Evil players are. \
+They tend to subtly guide the Good team while avoiding direct exposure.
+
+For each player (excluding yourself, Player {self_id}), output your belief \
+that they are Merlin as a probability between 0.0 and 1.0. Round to two decimal places.
+
+You MUST respond in EXACTLY this format. Do NOT write any prose before or after:
+
+Merlin: {{0: score, 1: score, 2: score, 3: score, 4: score}}
+"""
+
+BAYESIAN_PERIODIC_PREDICTION_PROMPT = """\
+Based on your current memory and everything you have observed so far, \
+predict how likely each other player is to be on the Good side.
+
+Your previous prediction was:
+{previous_prediction}
+
+Your recorded reasons for changing predictions in past rounds:
+{past_changes_log}
+
+When making your new prediction, you MUST employ Bayesian-like reasoning:
+1. Prior: Treat your previous prediction as your starting baseline.
+2. Evidence: Identify specific new actions, votes, or mission results that occurred since your last prediction.
+3. Update: Adjust your probability proportionally based on how strongly this new evidence indicates a player is Good or Evil. If there is no significant new evidence for a player, keep their prior probability unchanged.
+
+For each player (excluding yourself, Player {self_id}), output your updated belief \
+that they are Good as a probability between 0.0 and 1.0. Round to two decimal places.
+
+For each player whose prediction CHANGED from your previous prediction, \
+note in one sentence the specific new evidence that drove the Bayesian update.
+
+You MUST respond in EXACTLY this format. Do NOT write any prose before or after:
+
+Answer: {{0: score, 1: score, 2: score, 3: score, 4: score}}
+Changes:
+- Player <id>: <one sentence>
+(omit the Changes section entirely if no predictions changed)
+"""
+
+BAYESIAN_PERIODIC_MERLIN_PREDICTION_PROMPT = """\
+Based on your current memory and everything you have observed so far, \
+predict which player is most likely to be Merlin.
+
+Merlin is a Good player who secretly knows who the Evil players are. \
+They tend to subtly guide the Good team while avoiding direct exposure.
+
+Your previous Merlin prediction was:
+{previous_prediction}
+
+When making your new prediction, you MUST employ Bayesian-like reasoning:
+1. Prior: Treat your previous prediction as your starting baseline.
+2. Evidence: Identify specific new actions, votes, or discussion cues that occurred since your last prediction that align with Merlin's hidden knowledge behavior.
+3. Update: Adjust your probability proportionally based on how strongly this new evidence indicates a player is Merlin. If there is no significant new evidence, keep their prior probability unchanged.
+
+For each player (excluding yourself, Player {self_id}), output your updated belief \
+that they are Merlin as a probability between 0.0 and 1.0. Round to two decimal places.
+
+You MUST respond in EXACTLY this format. Do NOT write any prose before or after:
+
+Merlin: {{0: score, 1: score, 2: score, 3: score, 4: score}}
 """
 
 # Info Prompts
 INFO_ROLE = """"There are {} players, including Player 0, Player 1, Player 2, Player 3, and Player 4. {} players are good, including {} Merlin, and {} Servant(s). {} players are evil, including 1 Assassin, and {} Minion."
+The number of participants required for each quest are 2, 3, 2, 3, 3 respectively.
 """
 
 INFO_YOUR_ROLE = """You are {}, with identity {}. You are on the side of {}. Please do not forget your identity throughout the game.
@@ -194,8 +309,13 @@ INFO_YOUR_ROLE = """You are {}, with identity {}. You are on the side of {}. Ple
 SUMMARIZE_PROMPT = """\
 Review your full conversation history and write your private strategic memory for this game.
 
-Write freely in your own words. Focus on what you think will be most useful for future \
-rounds — there is no required format or structure.\
+After this summary, your conversation history will be cleared. Your next prompt will automatically \
+re-include the following — so you do NOT need to capture any of this in your summary:
+- The game rules and setup (number of players, quest structure, win conditions).
+- Your own role, alignment (Good/Evil), and any role-reveal information you received at game start.
+- Any long-term memory from previous games.
+
+Write freely about anything from this game that you believe will help you play better in the next round.\
 """
 
 DISCUSSION_SCAFFOLD = """
@@ -292,4 +412,152 @@ REPUTATION_MEMORY_CONTEXT_PROMPT = """\
 
 === END REPUTATION MEMORY ===
 Refer to your reputation memory above when reasoning and making your decision.\
+"""
+
+# ---------------------------------------------------------------------------
+# Retry and Error Prompts
+# ---------------------------------------------------------------------------
+
+RETRY_TEAM_SIZE_PROMPT = """You should choose a team of size {team_size}, instead of size {invalid_size} as you did. Please output a list of player ids with the correct team size."""
+
+RETRY_TEAM_PLAYERS_PROMPT = """You should choose a team of size {team_size} from Player 0 to {max_player_id}, instead of team {invalid_team} as you did. Please output a list of player ids with the correct team size and Player ids."""
+
+RETRY_VOTE_TEAM_PROMPT = """You surely are a player in the game. Please output `Yes` or `No` to vote on the team."""
+
+RETRY_VOTE_MISSION_PROMPT = """You surely are a player in the game, and you are a member in the quest. Please output `Yes` or `No` to vote on the quest."""
+
+# ---------------------------------------------------------------------------
+# Context Injection Prompts
+# ---------------------------------------------------------------------------
+
+QUERY_BELIEF_PROMPT = """To what extend do you believe each player to be Good, from Player 0 to Player {max_player_id}? Please output probabilities within [0, 1] and round to two decimal places.
+
+Your recorded reasons for changing predictions in past rounds:
+{past_changes_log}"""
+
+DISCUSSION_LEADER_PROMPT = """Player {team_leader_id} is the quest leader for this round. """
+
+STRATEGIC_MEMORY_HEADER = """=== YOUR STRATEGIC MEMORY UP TO THIS POINT ===
+{summary}
+=============================================="""
+
+EMPTY_MEMORY_NOTICE = "(no observations recorded yet)"
+
+CONFIRMED_PEERS_NOTICE_HEADER = """\n--- CONFIRMED Peers (semantic belief is ground truth \u2014 DO NOT update alignment/confidence/justification) ---"""
+CONFIRMED_PEERS_NOTICE_ITEM = """  Player {pid}: {alignment_role} (confidence {confidence_score}/5) \u2014 {justification}"""
+CONFIRMED_PEERS_NOTICE_FOOTER = """--- End CONFIRMED Peers ---\n"""
+
+# ---------------------------------------------------------------------------
+# Long-Term Memory Prompts
+# ---------------------------------------------------------------------------
+
+LONG_TERM_CRITIQUE_PROMPT = """\
+A game of Avalon (The Resistance) has just concluded. You were playing as Player 0.
+
+--- TRUE ROLES (revealed post-game) ---
+{true_roles}
+
+--- GAME OUTCOME ---
+{game_outcome}
+
+--- KEY GAME EVENTS ---
+{game_env_log}
+
+--- YOUR ROUND-BY-ROUND REASONING (private memory snapshots) ---
+{round_summaries}
+
+--- HOW YOUR BELIEFS ABOUT OTHER PLAYERS CHANGED ---
+{prediction_changes}
+
+You are building a Player Reputation Database to help identify allies and threats in future Avalon games.
+Player IDs are fixed across games — the same player sits in the same seat every game.
+
+For each player (1–4), your output has TWO required parts per observation:
+
+  PART 1 — Specific evidence from this game:
+  Describe the exact action, the round it happened, and why it is noteworthy.
+  Be concrete: name teams, round numbers, quest outcomes.
+  Do NOT write vague generalizations like "cautious voting" or "seems reliable" — these are useless.
+
+  PART 2 — Pattern to track in future games:
+  Based on that evidence, state the transferable behavioral signal to watch for next time.
+  This should be an actionable hypothesis: "If I see Player X do Y, it suggests Z."
+
+Example output:
+Player 2:
+- Evidence: "Proposed teams that always included Player 4, even after Player 4 was the only reject vote \
+in Round 1. Player 4 turned out to be Evil."
+  Pattern to track: "When Player 2 insists on including a specific player across multiple team proposals, \
+that player is likely their Evil partner."
+
+Player 3:
+- Evidence: "Voted REJECT on the team [0, 1, 3] in Round 3 — the only reject vote — while that team \
+then went on to pass the quest. There was no strategic reason for a Good player to reject it."
+  Pattern to track: "Player 3 lone-rejecting a broadly approved team is a strong Evil signal."
+
+If a player left no notable signal this game, write "No significant signal this game." \
+DO NOT invent observations — only record what you actually saw in the game events above.\
+"""
+
+LONG_TERM_SYNTHESIS_PROMPT = """\
+You are maintaining a Player Reputation Database for a 5-player Avalon game.
+Player IDs are fixed across games (Player 0 through Player 4).
+There are 3 Good players (1 Merlin, 2 Servants) and 2 Evil players (1 Assassin, 1 Minion).
+
+--- GAME RULES SUMMARY ---
+- Good wins by passing 3 quests. Evil wins by failing 3 quests or assassinating Merlin.
+- Players vote to approve/reject proposed teams. Quest members secretly vote pass/fail.
+- Merlin knows who Evil is but must remain hidden from the Assassin.
+
+You have just finished a batch of {n} games. Each post-game reflection contains:
+- Specific evidence from that game (concrete events — round-level actions, votes, team proposals).
+- Patterns to track (transferable behavioral hypotheses derived from that evidence).
+
+--- YOUR CURRENT REPUTATION DATABASE ---
+{current_memory}
+
+--- POST-GAME REFLECTIONS FROM THIS BATCH ---
+Each reflection is labeled [WIN] or [LOSS] based on the game outcome.
+{lessons}
+
+Your task: update the Reputation Database by refining the per-player reputation entries.
+
+A reputation entry has TWO parts:
+
+  Character summary:
+  A description of WHO this player is as a game-player — their tendencies, decision-making
+  style, and how they behave differently when Good vs Evil. This should explain the "why" behind
+  their observable behaviors. A character model lets you reason about new situations, not just match
+  pre-defined triggers.
+
+  Observable signals:
+  The specific, concrete behavioral signals that are diagnostic of their alignment. These are derived
+  from accumulated patterns across games. List them under "Evil signals" and "Good signals".
+
+CRITICAL RULES:
+- Do NOT record specific roles (e.g., NEVER write "Player 0 is Merlin"). Roles change every game.
+- Do NOT copy raw event evidence. Only the character model and refined signals persist.
+- Both the character summary AND observable signals MUST describe only observed behaviors. Do NOT speculate using "may", "might", "could", or "potentially" — if you have insufficient data for an alignment, write "No pattern yet" instead.
+
+Example Output:
+Player 3:
+- Character: A cautious obstructionist — uses vote rejection as a disruption tactic to protect \
+Evil allies or introduce chaos, rather than out of genuine strategic caution. When Good, asks \
+probing questions about team composition but generally approves reasonable teams.
+- [Evil]: Lone-rejects broadly approved teams; unusually quiet in early discussions.
+- [Good]: No strong pattern yet.
+
+Merge new observations with existing entries. Update the character summary if new evidence refines \
+your understanding of this player.\
+"""
+
+LONG_TERM_MEMORY_INJECTION_PROMPT = """\
+=== YOUR LONG-TERM STRATEGIC MEMORY ===
+From your experience across previous games of Avalon,
+you have accumulated the following strategic knowledge.
+Use it to inform your decisions this game.
+
+{memory_text}
+
+=== END LONG-TERM MEMORY ===\
 """

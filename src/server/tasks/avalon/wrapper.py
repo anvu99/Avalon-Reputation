@@ -2,7 +2,7 @@ from copy import deepcopy
 from typing import Dict, Union
 from src.server.task import Session
 from .utils import get_team_result, get_vote_result, get_assassination_result, get_believed_player_sides, get_game_logger
-from .prompts import CHECK_CHOOSE_TEAM_PROMPT, CHECK_VOTE_ON_QUEST_PROMPT, CHECK_VOTE_ON_TEAM_PROMPT, CHECK_ASSASSINATE_PROMPT, CHECK_BELIEVED_SIDES_PROMPT, GET_MERLIN_PROBABILITIES
+from .prompts import CHECK_CHOOSE_TEAM_PROMPT, CHECK_VOTE_ON_QUEST_PROMPT, CHECK_VOTE_ON_TEAM_PROMPT, CHECK_ASSASSINATE_PROMPT, CHECK_BELIEVED_SIDES_PROMPT, GET_MERLIN_PROBABILITIES, RETRY_TEAM_SIZE_PROMPT, RETRY_TEAM_PLAYERS_PROMPT, RETRY_VOTE_TEAM_PROMPT, RETRY_VOTE_MISSION_PROMPT
 from src.typings import SampleStatus
 from src.typings import AgentContextLimitException
 from .avalon_exception import AvalonAgentActionException
@@ -66,6 +66,22 @@ class AvalonSessionWrapper(SessionWrapper):
                     'content': input['content']
                 })
             self.proxy.balance_history()
+            
+            logger = get_game_logger()
+            if logger.name == "game_0" and getattr(self.proxy, 'current_agent', -1) == 0:
+                import os, json
+                if logger.handlers:
+                    log_path = logger.handlers[0].baseFilename
+                    dir_name = os.path.dirname(log_path)
+                    prompt_log_path = os.path.join(dir_name, "agent_0_prompts_game_0.log")
+                    with open(prompt_log_path, "a") as f:
+                        f.write("========== NEW PROMPT SENT TO AGENT 0 ==========\n")
+                        try:
+                            f.write(json.dumps(self.session.history, indent=2))
+                        except Exception:
+                            f.write(str(self.session.history))
+                        f.write("\n\n")
+
             response = await self.session.action()
 
             if response.status == SampleStatus.AGENT_CONTEXT_LIMIT:
@@ -96,7 +112,7 @@ class AvalonSessionWrapper(SessionWrapper):
                 self.session.history = list(past_history)
                 self.session.inject({
                     "role": "user",
-                    "content": f"You should choose a team of size {team_size}, instead of size {len(answer)} as you did. Please output a list of player ids with the correct team size."
+                    "content": RETRY_TEAM_SIZE_PROMPT.format(team_size=team_size, invalid_size=len(answer))
                 })
                 answer = await self.session.action()
                 answer = answer.content
@@ -121,7 +137,7 @@ class AvalonSessionWrapper(SessionWrapper):
                 self.session.history = list(past_history)
                 self.session.inject({
                     "role": "user",
-                    "content": f"You should choose a team of size {team_size} from Player 0 to {self.proxy.num_agents-1}, instead of team {answer} as you did. Please output a list of player ids with the correct team size and Player ids."
+                    "content": RETRY_TEAM_PLAYERS_PROMPT.format(team_size=team_size, max_player_id=self.proxy.num_agents-1, invalid_team=answer)
                 })
                 answer = await self.session.action()
                 answer = answer.content
@@ -156,7 +172,7 @@ class AvalonSessionWrapper(SessionWrapper):
                 self.session.history = list(past_history)
                 self.session.inject({
                     "role": "user",
-                    "content": f"You surely are a player in the game. Please output `Yes` or `No` to vote on the team."
+                    "content": RETRY_VOTE_TEAM_PROMPT
                 })
                 answer = await self.session.action()
                 answer = answer.content
@@ -189,7 +205,7 @@ class AvalonSessionWrapper(SessionWrapper):
                 self.session.history = list(past_history)
                 self.session.inject({
                     "role": "user",
-                    "content": "You surely are a player in the game, and you are a member in the quest. Please output `Yes` or `No` to vote on the quest."
+                    "content": RETRY_VOTE_MISSION_PROMPT
                 })
                 answer = await self.session.action()
                 answer = answer.content
