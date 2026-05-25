@@ -481,19 +481,19 @@ For each player (1–4), your output has TWO required parts per observation:
 
   PART 2 — Pattern to track in future games:
   Based on that evidence, state the transferable behavioral signal to watch for next time.
-  This should be an actionable hypothesis: "If I see Player X do Y, it suggests Z."
+  **CRITICAL**: Do not guess their alignment! State how their true alignment explains their behavior.
 
 Example output:
-Player 2:
+Player 2 (True Alignment: Evil):
 - Evidence: "Proposed teams that always included Player 4, even after Player 4 was the only reject vote \
 in Round 1. Player 4 turned out to be Evil."
-  Pattern to track: "When Player 2 insists on including a specific player across multiple team proposals, \
-that player is likely their Evil partner."
+  Pattern to track: "Their insistence on including a specific player across multiple team proposals suggests \
+that player is their Evil partner."
 
-Player 3:
+Player 3 (True Alignment: Evil):
 - Evidence: "Voted REJECT on the team [0, 1, 3] in Round 3 — the only reject vote — while that team \
 then went on to pass the quest. There was no strategic reason for a Good player to reject it."
-  Pattern to track: "Player 3 lone-rejecting a broadly approved team is a strong Evil signal."
+  Pattern to track: "Lone-rejecting a broadly approved team is a strong signal that they are Evil."
 
 If a player left no notable signal this game, write "No significant signal this game." \
 DO NOT invent observations — only record what you actually saw in the game events above.\
