@@ -13,7 +13,8 @@ from ..prompts import (
     TUTORIAL_STRATEGIES_PROMPTS_ZERO_SHOT, SUMMARIZE_PROMPT, PERIODIC_PREDICTION_PROMPT,
     PERIODIC_MERLIN_PREDICTION_PROMPT, STRATEGIC_MEMORY_HEADER, EMPTY_MEMORY_NOTICE, CONFIRMED_PEERS_NOTICE_HEADER, CONFIRMED_PEERS_NOTICE_ITEM, CONFIRMED_PEERS_NOTICE_FOOTER, QUERY_BELIEF_PROMPT, DISCUSSION_LEADER_PROMPT,
     BAYESIAN_PERIODIC_PREDICTION_PROMPT, BAYESIAN_PERIODIC_MERLIN_PREDICTION_PROMPT,
-    LONG_TERM_MEMORY_INJECTION_PROMPT
+    LONG_TERM_MEMORY_INJECTION_PROMPT,
+    ASSASSIN_QUERY_MERLIN_BELIEF_PROMPT, ASSASSIN_BAYESIAN_QUERY_MERLIN_BELIEF_PROMPT,
 )
 from copy import deepcopy
 from ..utils import verbalize_team_result, verbalize_mission_result
@@ -98,9 +99,9 @@ class LLMAgentWithDiscussion(Agent):
                 merlin = str(idx)
         if self.role_name == "Merlin":
             if len(minion_list) == 1:
-                reveal_info = REVEAL_PROMPTS['Merlin'][0].format(', '.join(minion_list), ', '.join(servant_list))
-            elif len(minion_list) > 1:
-                reveal_info = REVEAL_PROMPTS['Merlin'][1].format(', '.join(minion_list))
+                reveal_info = REVEAL_PROMPTS['Merlin'][0].format(assassin, ', '.join(minion_list), ', '.join(servant_list))
+            else:
+                reveal_info = f"Player {assassin} is Assassin. Players {', '.join(minion_list)} are Minion(s). Players {', '.join(servant_list)} are Servant(s)."
         if self.role_name == "Minion":
             if len(minion_list) == 1:
                 reveal_info = REVEAL_PROMPTS['Minion'][0].format(assassin, ', '.join(servant_list + [merlin]))
@@ -260,7 +261,10 @@ class LLMAgentWithDiscussion(Agent):
         if changes_text:
             get_game_logger().info(f"[Changes]\n{changes_text}")
     async def observe_mission(self, team, mission_id, num_fails, votes, outcome, **kwargs) -> None:
-        pass
+        await self.session.action({
+            "role": "user",
+            "content": verbalize_mission_result(team, outcome),
+        })
 
     # ------------------------------------------------------------------
     # Reputation Memory helpers
@@ -429,8 +433,11 @@ class LLMAgentWithDiscussion(Agent):
             "content": verbalize_team_result(team, votes, outcome),
         })
     
-    async def get_believed_sides(self, num_players: int, **kwargs) -> List[float]:
-        past_changes_str = "\n".join(self.prediction_changes_log) if self.prediction_changes_log else "(None recorded yet)"
+    async def get_believed_sides(self, num_players: int, exclude_past_changes: bool = False, **kwargs) -> List[float]:
+        if exclude_past_changes:
+            past_changes_str = "(excluded for standardized evaluation)"
+        else:
+            past_changes_str = "\n".join(self.prediction_changes_log) if self.prediction_changes_log else "(None recorded yet)"
         input = {
             "role": "user",
             "content": QUERY_BELIEF_PROMPT.format(max_player_id=self.num_players - 1, past_changes_log=past_changes_str),
@@ -445,15 +452,53 @@ class LLMAgentWithDiscussion(Agent):
             result  =   believed_player_sides
         )
         if isinstance(believed_player_sides, str):
+            use_discrete = getattr(self.session.task, 'use_discrete_rating', False)
+            default_val = 3.0 if use_discrete else 0.5
             try:
                 believed_player_sides = json.loads(believed_player_sides)
             except Exception:
                 try:
                     believed_player_sides = eval(believed_player_sides)
                 except Exception:
-                    believed_player_sides = ([0.5] * self.num_players, [0.5] * self.num_players)
+                    believed_player_sides = ([default_val] * self.num_players, [default_val] * self.num_players)
         get_game_logger().info(f"Sides: {believed_player_sides}")
         return believed_player_sides
+
+    async def get_believed_merlin(self, num_players: int, exclude_past_changes: bool = False, **kwargs) -> List[float]:
+        """Query Assassin for Merlin probability distribution. Two-stage: reasoning then structured extraction."""
+        # Stage 1: Assassin reasons about who is Merlin
+        if self.use_bayesian_prediction and not exclude_past_changes:
+            content = ASSASSIN_BAYESIAN_QUERY_MERLIN_BELIEF_PROMPT.format(
+                previous_prediction=self.previous_merlin_prediction if self.previous_merlin_prediction else "{}"
+            )
+        else:
+            content = ASSASSIN_QUERY_MERLIN_BELIEF_PROMPT
+
+        input = {
+            "role": "user",
+            "content": content,
+            "mode": "get_believed_merlin",
+            "role_name": self.role_name
+        }
+        raw_reasoning = await self.session.action(input)
+
+        # Stage 2: Parse structured Merlin probabilities from the reasoning
+        believed_merlin_sides = await self.session.parse_result(
+            input   =   input,
+            result  =   raw_reasoning
+        )
+        if isinstance(believed_merlin_sides, str):
+            use_discrete = getattr(self.session.task, 'use_discrete_rating', False)
+            default_val = 3.0 if use_discrete else 0.5
+            try:
+                believed_merlin_sides = json.loads(believed_merlin_sides)
+            except Exception:
+                try:
+                    believed_merlin_sides = eval(believed_merlin_sides)
+                except Exception:
+                    believed_merlin_sides = [default_val] * self.num_players
+        get_game_logger().info(f"Believed Merlin: {believed_merlin_sides}")
+        return believed_merlin_sides
 
     # async def discussion_end(self):
     #     content_prompt = f"Discussion has ended. Here are the contents:\nStatement from Leader {leader}: \n\"{leader_statement}\"\nAnd words from other players:\n{' '.join(discussion_history)}"
@@ -468,8 +513,11 @@ class LLMAgentWithDiscussion(Agent):
 
         fails_required = self.config.num_fails_for_quest[mission_id]
         
+        # Inject personality guidelines into the discussion phase prompts
+        personality_cot = PERSONALITY_PROMPTS.get(self.personality, PERSONALITY_PROMPTS['default'])['cot']
+        
         side_prompt = DISCUSSION_GOOD_PLAYER if self.side == 1 else DISCUSSION_EVIL_PLAYER
-        discussion_guidance = DISCUSSION_SCAFFOLD + side_prompt + DISCUSSION_SUFFIX
+        discussion_guidance = DISCUSSION_SCAFFOLD + side_prompt + personality_cot + DISCUSSION_SUFFIX
         
         content_prompt = CHOOSE_TEAM_LEADER.format(team_size) + discussion_guidance
         if self.id == team_leader_id:

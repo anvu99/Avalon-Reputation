@@ -28,6 +28,7 @@ class NaiveAgent(Agent):
         self.team = None
         self.side = side # 1 for good, 0 for evil
         self.history = None
+        self.session = kwargs.get('session')
         if sides is None:
             self.player_sides = [-1] * self.config.num_players # -1 for unknown, 0 for evil, 1 for good
             self.player_sides[id] = side
@@ -81,8 +82,24 @@ class NaiveAgent(Agent):
         return random.randint(0, self.config.num_players-1)
     
     async def get_believed_sides(self, **kwargs):
-        return [0.5 if side == -1 else side for side in self.player_sides]
-    
+        use_discrete = False
+        if hasattr(self, 'session') and self.session is not None:
+            use_discrete = getattr(self.session.task, 'use_discrete_rating', False)
+        if use_discrete:
+            mapping = {-1: 3.0, 0: 1.0, 1: 5.0}
+            return [mapping.get(side, 3.0) for side in self.player_sides]
+        return [0.5 if side == -1 else float(side) for side in self.player_sides]
+
+    async def get_believed_merlin(self, **kwargs):
+        use_discrete = False
+        if hasattr(self, 'session') and self.session is not None:
+            use_discrete = getattr(self.session.task, 'use_discrete_rating', False)
+        if use_discrete:
+            return [3.0 if i != self.id else 1.0 for i in range(self.config.num_players)]
+        # Naive agents return an equal-prior distribution (excluding self since Assassin can't be Merlin)
+        priors = [1.0 / (self.config.num_players - 1) if i != self.id else 0.0 for i in range(self.config.num_players)]
+        return priors
+
 
 class NaiveMinion(NaiveAgent):
     
@@ -94,7 +111,8 @@ class NaiveMinion(NaiveAgent):
             config  =   config,
             side    =   side,
             role    =   role,
-            sides   =   sides
+            sides   =   sides,
+            session =   configs.get('session')
             )
 
     async def vote_on_mission(self, mission_id: int, team: frozenset, **kwargs):
@@ -138,7 +156,8 @@ class NaiveAssassin(NaiveAgent):
             config  =   config,
             side    =   side,
             role    =   role,
-            sides   =   sides
+            sides   =   sides,
+            session =   configs.get('session')
             )
 
     async def vote_on_mission(self, mission_id: int, team: frozenset, **kwargs):
@@ -181,7 +200,8 @@ class NaiveMerlin(NaiveAgent):
             config  =   config,
             side    =   side,
             role    =   role,
-            sides   =   sides
+            sides   =   sides,
+            session =   configs.get('session')
             )
     
     async def vote_on_team(self, team: frozenset, mission_id: int, **kwargs):
@@ -205,7 +225,8 @@ class NaiveServant(NaiveAgent):
             config  =   config,
             side    =   side,
             role    =   role,
-            sides   =   sides
+            sides   =   sides,
+            session =   configs.get('session')
             )
 
         # maintain a list of all possible combinations of player sides
@@ -344,6 +365,12 @@ class NaiveServant(NaiveAgent):
                 # if player is good in sides, increment marginal distribution by prob of side
                 if sides[i] == 1:
                     marginal_distribution[i] += prob
+        
+        use_discrete = False
+        if hasattr(self, 'session') and self.session is not None:
+            use_discrete = getattr(self.session.task, 'use_discrete_rating', False)
+        if use_discrete:
+            return [1.0 + prob * 4.0 for prob in marginal_distribution]
         return marginal_distribution
     
 NAIVEAGENT_FINDER = {

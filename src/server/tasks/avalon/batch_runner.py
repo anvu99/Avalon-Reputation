@@ -38,7 +38,8 @@ class AvalonBatchRunner:
 
         per_batch_metrics = None
 
-        if getattr(self.task, 'long_term_memories', None):
+        # Force sequential batch execution if LTM or Public Reputation is enabled
+        if getattr(self.task, 'long_term_memories', None) or getattr(self.task, 'use_public_reputation', False):
             results, per_batch_metrics = await self._run_batched(indices, agent, output_path)
         else:
             sem = asyncio.Semaphore(self.concurrent_games)
@@ -143,11 +144,17 @@ class AvalonBatchRunner:
         lessons = "\n\n---\n\n".join(ltm.pending_lessons)
         current_memory = ltm.memory_text if ltm.memory_text else "(No memory yet)"
 
+        num_players = getattr(self.task, 'num_players', 5)
+        other_pids = [i for i in range(num_players) if i != player_id]
+        other_player_ids = ", ".join(f"Player {i}" for i in other_pids)
+
         base_prompt = LONG_TERM_SYNTHESIS_PROMPT_COUNTER_NORM if getattr(self.task, 'ltm_counter_norm', False) else LONG_TERM_SYNTHESIS_PROMPT
         prompt = base_prompt.format(
             n=n_games,
             current_memory=current_memory,
-            lessons=lessons
+            lessons=lessons,
+            player_id=player_id,
+            other_player_ids=other_player_ids
         )
 
         session = DirectSession(agent)

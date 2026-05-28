@@ -78,6 +78,18 @@ def parse_args():
              "Games are run in batches; memory is synthesized after each batch. "
              "E.g. --ltm-agents 0 1",
     )
+    parser.add_argument(
+        "--use-discrete-rating",
+        action="store_true",
+        default=False,
+        help="Use discrete 1-5 Likert scale ratings instead of continuous probabilities for beliefs.",
+    )
+    parser.add_argument(
+        "--tensor-parallel-size",
+        type=int,
+        default=1,
+        help="Number of GPUs to use for tensor parallel execution (vLLM).",
+    )
     return parser.parse_args()
 
 
@@ -88,7 +100,9 @@ async def main():
         model_name=args.model,
         max_tokens=1024,
         temperature=0.0,
-        tensor_parallel_size=1,
+        tensor_parallel_size=args.tensor_parallel_size,
+        max_model_len=16384,
+        disable_custom_all_reduce=True,
     )
 
     data_file = args.data_file
@@ -103,6 +117,7 @@ async def main():
         discussion=True,
         data_file=data_file,
         use_reputation_memory=args.use_reputation_memory,
+        use_discrete_rating=args.use_discrete_rating,  # NEW
         use_bayesian_prediction=args.use_bayesian_prediction,
         log_memory_snapshots_for=[] if args.no_memory_snapshot else None,
         predict_for=[] if args.no_periodic_prediction else None,
@@ -117,18 +132,19 @@ async def main():
     rep_tag = "_rep" if args.use_reputation_memory else ""
     bayes_tag = "_bayes" if args.use_bayesian_prediction else ""
     ltm_tag = "_ltm" + "-".join(str(p) for p in sorted(args.ltm_agents)) if args.ltm_agents else ""
+    discrete_tag = "_discrete" if args.use_discrete_rating else ""
     personality_tag = "_" + "-".join(args.personality_list) if any(p != "default" for p in args.personality_list) else ""
     
     suffix = base_suffix
-    log_dir = f"logs/{data_name}_{job_id}_{suffix}{rep_tag}{bayes_tag}{ltm_tag}{personality_tag}"
-    output_path = f"outputs/results_{data_name}_{job_id}_{suffix}{rep_tag}{bayes_tag}{ltm_tag}{personality_tag}.jsonl"
+    log_dir = f"logs/{data_name}/{data_name}_{job_id}_{suffix}{rep_tag}{bayes_tag}{ltm_tag}{discrete_tag}{personality_tag}"
+    output_path = f"outputs/results_{data_name}_{job_id}_{suffix}{rep_tag}{bayes_tag}{ltm_tag}{discrete_tag}{personality_tag}.jsonl"
 
     # Auto-increment suffix to prevent overwriting
     counter = 1
     while os.path.exists(output_path) or os.path.exists(log_dir):
         suffix = f"{base_suffix}_v{counter}"
-        log_dir = f"logs/freedom_{data_name}_{job_id}_{suffix}{rep_tag}{bayes_tag}"
-        output_path = f"outputs/results_freedom_{data_name}_{job_id}_{suffix}{rep_tag}{bayes_tag}.jsonl"
+        log_dir = f"logs/{data_name}/{data_name}_{job_id}_{suffix}{rep_tag}{bayes_tag}{ltm_tag}{discrete_tag}{personality_tag}"
+        output_path = f"outputs/results_{data_name}_{job_id}_{suffix}{rep_tag}{bayes_tag}{ltm_tag}{discrete_tag}{personality_tag}.jsonl"
         counter += 1
 
     os.makedirs("outputs", exist_ok=True)

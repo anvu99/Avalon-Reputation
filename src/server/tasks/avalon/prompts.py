@@ -78,7 +78,7 @@ As you are playing the role of Assassin in this game, here are some aspects you 
 REVEAL_PROMPTS = {
     #TODO: Evil, Good
     "Merlin": [
-        "Player {} is Minion. Players {} are Servants.",
+        "Player {} is Assassin. Player {} is Minion. Players {} are Servants.",
         # "Players {} are Minions of Modred."
     ],
     #TODO: only knows who are Evil
@@ -150,33 +150,32 @@ If you have long-term memory from past games, actively consult it — especially
 PERSONALITY_PROMPTS = {
     "naive": {
         "prefix": (
-            "You are a naturally trusting and optimistic player. You believe most people "
-            "are acting in good faith and prefer to give others the benefit of the doubt. "
-            "You are uncomfortable making accusations without very strong evidence, and you "
-            "tend to follow the group's consensus rather than push back alone. You rarely "
-            "lone-reject a proposed team unless you have a very specific, concrete reason."
+            "You are an extremely naive, trusting, and consensus-driven player. You prioritize "
+            "team harmony, psychological safety, and collective alignment. You believe that mutual trust is the "
+            "Good team's strongest shield, and you default to giving other players the benefit of the doubt. You "
+            "are deeply reluctant to accuse others without clear, unambiguous signs of bad faith. When faced with "
+            "group consensus, you prefer to coordinate and align with the majority rather than cause friction "
+            "or stand as a lone obstructionist."
         ),
         "cot": (
-            "\n\n**Personality — Naive & Trusting**: Default to trusting people. "
-            "Only deviate from the group consensus if you have concrete, undeniable evidence "
-            "of betrayal — vague suspicion is not enough to reject. When in doubt, approve."
+            "\n\n**Personality — Naive & Cooperative**: Approach this decision with a cooperative, "
+            "team-oriented mindset. Look for reasons to trust your peers, respect group consensus, and avoid "
+            "speculative accusations. Prioritize harmony, collaboration, and collective trust."
         ),
     },
     "deceptive": {
         "prefix": (
-            "You are a cunning and psychologically manipulative player. You treat social "
-            "deception as a core tool — even when playing on the Good side, you strategically "
-            "mislead suspected Evil players by voicing false suspicions, feigning uncertainty, "
-            "or misdirecting attention. You never reveal your true reasoning in public discussion; "
-            "instead, you craft statements that serve your strategic goals regardless of their "
-            "literal truth."
+            "You are a highly analytical, strategic, and deceptive player who views social deduction as a game "
+            "of psychological leverage and hidden information. You treat public discussion as a theater—you believe "
+            "that revealing your true thoughts, doubts, or alignment makes you vulnerable and predictable. Even when Good, "
+            "you prefer stealth, misdirection, and testing others' reactions through false signals or artificial conflict "
+            "over straightforward honesty. You treat every statement from other players with deep skepticism, assuming "
+            "everyone is acting strategically or deceptively."
         ),
         "cot": (
-            "\n\n**Personality — Deceptive & Strategic**: In your private reasoning, decide "
-            "your actual vote first based on your true goals. Then, when you speak publicly, "
-            "plan a statement that deliberately misleads or misdirects other players — even "
-            "if it contradicts your actual vote rationale. Use your discussion turn to cast "
-            "suspicion strategically, not to reveal your real thinking."
+            "\n\n**Personality — Deceptive & Strategic**: Approach this decision with a strategic, highly skeptical "
+            "mindset. Focus on hidden motivations, protect your true thoughts, and consider how to use misdirection "
+            "or social pressure to test other players' real intentions. Never be predictable."
         ),
     },
     "default": {
@@ -452,7 +451,7 @@ CONFIRMED_PEERS_NOTICE_FOOTER = """--- End CONFIRMED Peers ---\n"""
 # ---------------------------------------------------------------------------
 
 LONG_TERM_CRITIQUE_PROMPT = """\
-A game of Avalon (The Resistance) has just concluded. You were playing as Player 0.
+A game of Avalon (The Resistance) has just concluded. You were playing as Player {observer_id}.
 
 --- TRUE ROLES (revealed post-game) ---
 {true_roles}
@@ -470,30 +469,29 @@ A game of Avalon (The Resistance) has just concluded. You were playing as Player
 {prediction_changes}
 
 You are building a Player Reputation Database to help identify allies and threats in future Avalon games.
-Player IDs are fixed across games — the same player sits in the same seat every game.
+Player IDs are fixed across games — the same player sits in the same seat every game. You are Player {observer_id}.
 
-For each player (1–4), your output has TWO required parts per observation:
+For each of the other players ({other_player_ids}), list ALL notable observations. You may list multiple distinct observations per player.
+**CRITICAL**: Do NOT list or track observations, lessons, or memories for Player {observer_id} (yourself). You already know your own alignment and decisions. Do not track any lessons or include memory about yourself (Player {observer_id}). Only track the other players ({other_player_ids}).
 
+Each observation MUST have TWO required parts:
   PART 1 — Specific evidence from this game:
   Describe the exact action, the round it happened, and why it is noteworthy.
-  Be concrete: name teams, round numbers, quest outcomes.
-  Do NOT write vague generalizations like "cautious voting" or "seems reliable" — these are useless.
+  Be concrete: name teams, round numbers, and quest outcomes.
 
   PART 2 — Pattern to track in future games:
   Based on that evidence, state the transferable behavioral signal to watch for next time.
   **CRITICAL**: Do not guess their alignment! State how their true alignment explains their behavior.
+  ONLY record unique, learned strategic patterns or psychological tells for this specific Player ID (e.g., "Player 3 always approves despite public skepticism", "Player 2 follows consensus blindly without defending themselves").
 
 Example output:
 Player 2 (True Alignment: Evil):
-- Evidence: "Proposed teams that always included Player 4, even after Player 4 was the only reject vote \
-in Round 1. Player 4 turned out to be Evil."
-  Pattern to track: "Their insistence on including a specific player across multiple team proposals suggests \
-that player is their Evil partner."
-
-Player 3 (True Alignment: Evil):
-- Evidence: "Voted REJECT on the team [0, 1, 3] in Round 3 — the only reject vote — while that team \
-then went on to pass the quest. There was no strategic reason for a Good player to reject it."
-  Pattern to track: "Lone-rejecting a broadly approved team is a strong signal that they are Evil."
+- Observation 1:
+  - Evidence: "Proposed teams that always included Player 4, even after Player 4 was the only reject vote in Round 1. Player 4 turned out to be Evil."
+  - Pattern to track: "Their insistence on including a specific player across multiple team proposals suggests that player is their Evil partner."
+- Observation 2:
+  - Evidence: "Voted REJECT on the final winning team despite publicly stating they trusted the leader."
+  - Pattern to track: "They contradicted their public trust with a private reject vote to sabotage the mission."
 
 If a player left no notable signal this game, write "No significant signal this game." \
 DO NOT invent observations — only record what you actually saw in the game events above.\
@@ -501,7 +499,7 @@ DO NOT invent observations — only record what you actually saw in the game eve
 
 LONG_TERM_SYNTHESIS_PROMPT = """\
 You are maintaining a Player Reputation Database for a 5-player Avalon game.
-Player IDs are fixed across games (Player 0 through Player 4).
+Player IDs are fixed across games. You are Player {player_id}, and you are tracking reputation for the other players ({other_player_ids}).
 There are 3 Good players (1 Merlin, 2 Servants) and 2 Evil players (1 Assassin, 1 Minion).
 
 --- GAME RULES SUMMARY ---
@@ -510,7 +508,7 @@ There are 3 Good players (1 Merlin, 2 Servants) and 2 Evil players (1 Assassin, 
 - Merlin knows who Evil is but must remain hidden from the Assassin.
 
 You have just finished a batch of {n} games. Each post-game reflection contains:
-- Specific evidence from that game (concrete events — round-level actions, votes, team proposals).
+- Specific evidence from that game. Note that there may be MULTIPLE independent observations for a single player.
 - Patterns to track (transferable behavioral hypotheses derived from that evidence).
 
 --- YOUR CURRENT REPUTATION DATABASE ---
@@ -525,30 +523,28 @@ Your task: update the Reputation Database by refining the per-player reputation 
 A reputation entry has TWO parts:
 
   Character summary:
-  A description of WHO this player is as a game-player — their tendencies, decision-making
-  style, and how they behave differently when Good vs Evil. This should explain the "why" behind
-  their observable behaviors. A character model lets you reason about new situations, not just match
-  pre-defined triggers.
+  A description of WHO this player is as a game-player — their tendencies, decision-making style, and how they behave differently when Good vs Evil. This should explain the "why" behind their observable behaviors. A character model lets you reason about new situations, not just match pre-defined triggers.
 
   Observable signals:
-  The specific, concrete behavioral signals that are diagnostic of their alignment. These are derived
-  from accumulated patterns across games. List them under "Evil signals" and "Good signals".
+  The specific, concrete behavioral signals that are diagnostic of their alignment. You MUST list multiple distinct signals as bullet points if the evidence supports it. Do NOT compress them into a single sentence. List them under "Evil signals" and "Good signals".
 
 CRITICAL RULES:
-- Do NOT record specific roles (e.g., NEVER write "Player 0 is Merlin"). Roles change every game.
+- Do NOT record specific roles (e.g., NEVER write "Player X is Merlin"). Roles change every game.
 - Do NOT copy raw event evidence. Only the character model and refined signals persist.
-- Both the character summary AND observable signals MUST describe only observed behaviors. Do NOT speculate using "may", "might", "could", or "potentially" — if you have insufficient data for an alignment, write "No pattern yet" instead.
+- Synthesize ALL provided observations into a cohesive profile. Do NOT speculate using "may", "might", "could", or "potentially" — if you have insufficient data for an alignment, write "No pattern yet" instead.
+- ONLY record unique, learned strategic patterns or psychological tells for this specific Player ID (e.g., "Player 3 always approves despite public skepticism", "Player 2 follows consensus blindly without defending themselves").
+- Do NOT include any entry, lesson, or memory for Player {player_id} (yourself). You already know your own alignment and strategies in real-time. Do not track any lessons or include memory about yourself (Player {player_id}). Only maintain database entries for the other players ({other_player_ids}).
 
 Example Output:
 Player 3:
-- Character: A cautious obstructionist — uses vote rejection as a disruption tactic to protect \
-Evil allies or introduce chaos, rather than out of genuine strategic caution. When Good, asks \
-probing questions about team composition but generally approves reasonable teams.
-- [Evil]: Lone-rejects broadly approved teams; unusually quiet in early discussions.
-- [Good]: No strong pattern yet.
+- Character: A cautious obstructionist — uses vote rejection as a disruption tactic to protect Evil allies or introduce chaos, rather than out of genuine strategic caution. When Good, asks probing questions about team composition but generally approves reasonable teams.
+- [Evil signals]:
+  - Lone-rejects broadly approved teams with no clear strategic reason.
+  - Unusually quiet in early discussions, voting only at the last minute.
+- [Good signals]:
+  - No strong pattern yet.
 
-Merge new observations with existing entries. Update the character summary if new evidence refines \
-your understanding of this player.\
+Merge new observations with existing entries. Update the character summary if new evidence refines your understanding of this player.\
 """
 
 LONG_TERM_MEMORY_INJECTION_PROMPT = """\
@@ -563,7 +559,7 @@ Use it to inform your decisions this game.
 """
 
 LONG_TERM_CRITIQUE_PROMPT_COUNTER_NORM = """\
-A game of Avalon (The Resistance) has just concluded. You were playing as Player 0.
+A game of Avalon (The Resistance) has just concluded. You were playing as Player {observer_id}.
 
 --- TRUE ROLES (revealed post-game) ---
 {true_roles}
@@ -581,9 +577,10 @@ A game of Avalon (The Resistance) has just concluded. You were playing as Player
 {prediction_changes}
 
 You are building a Player Reputation Database to help identify allies and threats in future Avalon games.
-Player IDs are fixed across games — the same player sits in the same seat every game.
+Player IDs are fixed across games — the same player sits in the same seat every game. You are Player {observer_id}.
 
-For each player (1–4), list ALL notable observations. You may list multiple distinct observations per player.
+For each of the other players ({other_player_ids}), list ALL notable observations. You may list multiple distinct observations per player.
+**CRITICAL**: Do NOT list or track observations, lessons, or memories for Player {observer_id} (yourself). You already know your own alignment and decisions. Do not track any lessons or include memory about yourself (Player {observer_id}). Only track the other players ({other_player_ids}).
 
 Each observation MUST have TWO required parts:
   PART 1 — Specific evidence from this game:
@@ -593,6 +590,7 @@ Each observation MUST have TWO required parts:
   PART 2 — Pattern to track in future games:
   Based on that evidence, state the transferable behavioral signal to watch for next time.
   **CRITICAL**: Do not guess their alignment! State how their true alignment explains their behavior.
+  ONLY record unique, learned strategic patterns or psychological tells for this specific Player ID (e.g., "Player 3 always approves despite public skepticism", "Player 2 follows consensus blindly without defending themselves").
 
 Example output:
 Player 2 (True Alignment: Evil):
@@ -609,7 +607,7 @@ DO NOT invent observations — only record what you actually saw in the game eve
 
 LONG_TERM_SYNTHESIS_PROMPT_COUNTER_NORM = """\
 You are maintaining a Player Reputation Database for a 5-player Avalon game.
-Player IDs are fixed across games (Player 0 through Player 4).
+Player IDs are fixed across games. You are Player {player_id}, and you are tracking reputation for the other players ({other_player_ids}).
 There are 3 Good players (1 Merlin, 2 Servants) and 2 Evil players (1 Assassin, 1 Minion).
 
 --- GAME RULES SUMMARY ---
@@ -640,9 +638,11 @@ A reputation entry has TWO parts:
   The specific, concrete behavioral signals that are diagnostic of their alignment. Prioritize listing counter-norm deviations here. You MUST list multiple distinct signals as bullet points if the evidence supports it. Do NOT compress them into a single sentence. List them under "Evil signals" and "Good signals".
 
 CRITICAL RULES:
-- Do NOT record specific roles (e.g., NEVER write "Player 0 is Merlin"). Roles change every game.
+- Do NOT record specific roles (e.g., NEVER write "Player X is Merlin"). Roles change every game.
 - Do NOT copy raw event evidence. Only the character model and refined signals persist.
 - Synthesize ALL provided observations into a cohesive profile. Do NOT speculate using "may", "might", "could", or "potentially" — if you have insufficient data for an alignment, write "No pattern yet" instead.
+- ONLY record unique, learned strategic patterns or psychological tells for this specific Player ID (e.g., "Player 3 always approves despite public skepticism", "Player 2 follows consensus blindly without defending themselves").
+- Do NOT include any entry, lesson, or memory for Player {player_id} (yourself). You already know your own alignment and strategies in real-time. Do not track any lessons or include memory about yourself (Player {player_id}). Only maintain database entries for the other players ({other_player_ids}).
 
 Example Output:
 Player 3:
@@ -655,4 +655,94 @@ Player 3:
   - No strong pattern yet.
 
 Merge new observations with existing entries. Update the character summary if new evidence refines your understanding of this player's counter-norm tendencies.\
+"""
+
+# ---------------------------------------------------------------------------
+# Public Reputation Database Prompts
+# ---------------------------------------------------------------------------
+
+PUBLIC_REPUTATION_INJECTION_PROMPT = """\
+=== HISTORICAL PLAYER REPUTATION DATABASE ===
+Below are the historical, cross-game performance profiles for the players in this session (accumulated over all completed games so far).
+Use this information to decide how you interact with other players and observe the game.
+
+--- METRIC DEFINITIONS ---
+1. GOOD-SIDE PERFORMANCE:
+   - Servant Deception Susceptibility: The average probability this player assigns to Evil players being on the Good side when this player is a Servant.
+   - Servant Good-Player ID Accuracy : The average probability this player assigns to other Good teammates being on the Good side when this player is a Servant.
+   - Merlin Stealth Score           : The average value of (1.0 - P(Merlin)), where P(Merlin) is the probability the Assassin assigns to this player being Merlin when this player is Merlin.
+   - Merlin Win Rate                : The percentage of games won by the Good side when this player is Merlin.
+2. EVIL-SIDE PERFORMANCE:
+   - Evil Blending Score            : The average probability Servants assign to this player being on the Good side when this player is on the Evil side.
+   - Assassin Merlin ID Accuracy    : The average probability this player assigns to the true Merlin player being Merlin when this player is the Assassin.
+
+--- PLAYER PROFILES ---
+{reputation_text}
+=============================================\
+"""
+
+ASSASSIN_QUERY_MERLIN_BELIEF_PROMPT = """\
+Based on your current memory and everything you have observed so far, who is most likely to be Merlin?
+Merlin is a Good player who secretly knows who the Evil players are. They tend to subtly guide the Good team while avoiding direct exposure.
+
+Please reason step-by-step about which player is Merlin, and evaluate how likely each player is to be Merlin.
+"""
+
+ASSASSIN_BAYESIAN_QUERY_MERLIN_BELIEF_PROMPT = """\
+Based on your current memory and everything you have observed so far, who is most likely to be Merlin?
+Merlin is a Good player who secretly knows who the Evil players are. They tend to subtly guide the Good team while avoiding direct exposure.
+
+Your previous Merlin prediction was:
+{previous_prediction}
+
+When making your prediction, you MUST employ Bayesian-like reasoning:
+1. Prior: Treat your previous prediction as your starting baseline.
+2. Evidence: Identify specific new actions, votes, or discussion cues that occurred since your last prediction that align with Merlin's hidden knowledge behavior.
+3. Update: Adjust your probability proportionally based on how strongly this new evidence indicates a player is Merlin. If there is no significant new evidence, keep their prior probability unchanged.
+
+Please reason step-by-step about which player is Merlin, and evaluate how likely each player is to be Merlin.
+"""
+
+
+# ---------------------------------------------------------------------------
+# Public Reputation Database Prompts (Discrete Mode)
+# ---------------------------------------------------------------------------
+
+PUBLIC_REPUTATION_INJECTION_DISCRETE_PROMPT = """\
+=== HISTORICAL PLAYER REPUTATION DATABASE (DISCRETE 1-5 RATINGS) ===
+Below are the historical, cross-game performance profiles for the players in this session (accumulated over all completed games so far).
+Ratings scale from 1 (Strongly Suspect / Evil) to 5 (Strongly Trust / Good).
+
+--- METRIC DEFINITIONS ---
+1. GOOD-SIDE PERFORMANCE:
+   - Servant Deception Susceptibility: The average rating (1 to 5) this player assigns to Evil players when this player is a Servant. (Higher means more gullible).
+   - Servant Good-Player ID Accuracy : The average rating (1 to 5) this player assigns to other Good teammates when this player is a Servant. (Higher means more accurate).
+   - Merlin Stealth Score           : The average value of (5.0 - Rating(Merlin)), where Rating(Merlin) is the rating the Assassin assigns to this player being Merlin when this player is Merlin. (Higher means better hidden).
+   - Merlin Win Rate                : The percentage of games won by the Good side when this player is Merlin.
+2. EVIL-SIDE PERFORMANCE:
+   - Evil Blending Score            : The average rating (1 to 5) Servants assign to this player when this player is on the Evil side. (Higher means better blended).
+   - Assassin Merlin ID Accuracy    : The average rating (1 to 5) this player assigns to the true Merlin player when this player is the Assassin. (Higher means more accurate).
+
+--- PLAYER PROFILES ---
+{reputation_text}
+=============================================\
+"""
+
+CHECK_BELIEVED_SIDES_DISCRETE_PROMPT = r"""Based on the above information, output your rating that each player is Good on a scale from 1 to 5:
+1: Strongly Suspect (Evil)
+2: Suspect (Evil)
+3: Neutral/Unknown
+4: Trust (Good)
+5: Strongly Trust (Good)
+
+You MUST output ONLY the following format. Do NOT write any explanation, prose, or bullet points.
+
+Answer: {0: rating_for_0, 1: rating_for_1, 2: rating_for_2, 3: rating_for_3, 4: rating_for_4}
+
+Example: Answer: {0: 5, 1: 3, 2: 4, 3: 1, 4: 2}
+"""
+
+GET_MERLIN_PROBABILITIES_DISCRETE = """Also, output your rating that each player is Merlin as a rating from 1 to 5 (1 = highly unlikely, 5 = highly likely to be Merlin).
+Format:
+Merlin: {0: rating, 1: rating, 2: rating, 3: rating, 4: rating}
 """

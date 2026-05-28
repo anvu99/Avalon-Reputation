@@ -2,7 +2,7 @@ from copy import deepcopy
 from typing import Dict, Union
 from src.server.task import Session
 from .utils import get_team_result, get_vote_result, get_assassination_result, get_believed_player_sides, get_game_logger
-from .prompts import CHECK_CHOOSE_TEAM_PROMPT, CHECK_VOTE_ON_QUEST_PROMPT, CHECK_VOTE_ON_TEAM_PROMPT, CHECK_ASSASSINATE_PROMPT, CHECK_BELIEVED_SIDES_PROMPT, GET_MERLIN_PROBABILITIES, RETRY_TEAM_SIZE_PROMPT, RETRY_TEAM_PLAYERS_PROMPT, RETRY_VOTE_TEAM_PROMPT, RETRY_VOTE_MISSION_PROMPT
+from .prompts import CHECK_CHOOSE_TEAM_PROMPT, CHECK_VOTE_ON_QUEST_PROMPT, CHECK_VOTE_ON_TEAM_PROMPT, CHECK_ASSASSINATE_PROMPT, CHECK_BELIEVED_SIDES_PROMPT, GET_MERLIN_PROBABILITIES, RETRY_TEAM_SIZE_PROMPT, RETRY_TEAM_PLAYERS_PROMPT, RETRY_VOTE_TEAM_PROMPT, RETRY_VOTE_MISSION_PROMPT, CHECK_BELIEVED_SIDES_DISCRETE_PROMPT, GET_MERLIN_PROBABILITIES_DISCRETE
 from src.typings import SampleStatus
 from src.typings import AgentContextLimitException
 from .avalon_exception import AvalonAgentActionException
@@ -26,10 +26,11 @@ class FakeSession:
         pass
 
 class AvalonSessionWrapper(SessionWrapper):
-    def __init__(self, session: Union[Session, FakeSession], proxy: Proxy):
+    def __init__(self, session: Union[Session, FakeSession], proxy: Proxy, task=None):
         # super().__init__(session, proxy)
         self.session = session
         self.proxy = proxy
+        self.task = task
         self.decorate_method('action')
         self.decorate_method('inject')
         self.decorate_method('parse_result')
@@ -68,18 +69,22 @@ class AvalonSessionWrapper(SessionWrapper):
             self.proxy.balance_history()
             
             logger = get_game_logger()
-            if logger.name == "game_0" and getattr(self.proxy, 'current_agent', -1) == 0:
+            if logger.name.endswith("game_0") and getattr(self.proxy, 'current_agent', -1) == 0:
                 import os, json
                 if logger.handlers:
                     log_path = logger.handlers[0].baseFilename
                     dir_name = os.path.dirname(log_path)
                     prompt_log_path = os.path.join(dir_name, "agent_0_prompts_game_0.log")
+                    
+                    try:
+                        history_str = json.dumps(self.session.history, indent=2)
+                    except Exception:
+                        history_str = str(self.session.history)
+
+                    # 1. Write prompt to prompt-specific log
                     with open(prompt_log_path, "a") as f:
                         f.write("========== NEW PROMPT SENT TO AGENT 0 ==========\n")
-                        try:
-                            f.write(json.dumps(self.session.history, indent=2))
-                        except Exception:
-                            f.write(str(self.session.history))
+                        f.write(history_str)
                         f.write("\n\n")
 
             response = await self.session.action()
@@ -88,6 +93,20 @@ class AvalonSessionWrapper(SessionWrapper):
                 raise AgentContextLimitException()
             if response.content is None:
                 raise RuntimeError("Response content is None.")
+
+            if logger.name.endswith("game_0") and getattr(self.proxy, 'current_agent', -1) == 0:
+                import os
+                if logger.handlers:
+                    log_path = logger.handlers[0].baseFilename
+                    dir_name = os.path.dirname(log_path)
+                    prompt_log_path = os.path.join(dir_name, "agent_0_prompts_game_0.log")
+                    
+                    # 1. Write response to prompt-specific log
+                    with open(prompt_log_path, "a") as f:
+                        f.write("========== GENERATED RESPONSE FROM AGENT 0 ==========\n")
+                        f.write(str(response.content))
+                        f.write("\n\n")
+
             return response.content
         elif isinstance(self.session, FakeSession):
             return input.pop('naive_result', None)
@@ -107,6 +126,15 @@ class AvalonSessionWrapper(SessionWrapper):
             answer = await self.session.action()
             answer = answer.content
             answer = get_team_result(answer)
+            
+            # Clean and deduplicate player IDs extracted to prevent repeated list failures
+            unique_ids = []
+            for x in answer:
+                if isinstance(x, int) and 0 <= x < self.proxy.num_agents:
+                    if x not in unique_ids:
+                        unique_ids.append(x)
+            answer = unique_ids
+
             if len(answer) != team_size:
                 # Run another action to get the correct team size
                 self.session.history = list(past_history)
@@ -127,36 +155,24 @@ class AvalonSessionWrapper(SessionWrapper):
                 answer = answer.content
                 try:
                     answer = get_team_result(answer)
+                    unique_ids = []
+                    for x in answer:
+                        if isinstance(x, int) and 0 <= x < self.proxy.num_agents:
+                            if x not in unique_ids:
+                                unique_ids.append(x)
+                    while len(unique_ids) > team_size:
+                        unique_ids.pop()
+                    import random
+                    while len(unique_ids) < team_size:
+                        candidates = [c for c in range(self.proxy.num_agents) if c not in unique_ids]
+                        if not candidates:
+                            break
+                        unique_ids.append(random.choice(candidates))
+                    answer = unique_ids
                     assert len(answer) == team_size
                     assert isinstance(answer, list)
                 except:
                     get_game_logger().warning(f"Warning: Defaulting team to first {team_size} players due to invalid size retry: {answer}")
-                    answer = list(range(team_size))
-            elif max(answer) >= self.proxy.num_agents or min(answer) < 0:
-                # Run another action to get the correct team size
-                self.session.history = list(past_history)
-                self.session.inject({
-                    "role": "user",
-                    "content": RETRY_TEAM_PLAYERS_PROMPT.format(team_size=team_size, max_player_id=self.proxy.num_agents-1, invalid_team=answer)
-                })
-                answer = await self.session.action()
-                answer = answer.content
-                past_history = list(self.session.history) # Update the history
-                self.session.history = [] # Clear the history
-
-                self.session.inject({
-                    "role": "user",
-                    "content": answer + '\n\n' + CHECK_CHOOSE_TEAM_PROMPT
-                })
-                answer = await self.session.action()
-                answer = answer.content
-                try:
-                    answer = get_team_result(answer)
-                    assert len(answer) == team_size
-                    assert isinstance(answer, list)
-                    assert max(answer) < self.proxy.num_agents and min(answer) >= 0
-                except:
-                    get_game_logger().warning(f"Warning: Defaulting team to first {team_size} players due to invalid output: {answer}")
                     answer = list(range(team_size))
 
         elif mode == "vote_on_team":
@@ -239,10 +255,15 @@ class AvalonSessionWrapper(SessionWrapper):
                 answer = 0
                 
         elif mode == "get_believed_sides":
-            prompt = result + '\n\n' + CHECK_BELIEVED_SIDES_PROMPT
+            use_discrete = getattr(self.task, 'use_discrete_rating', False)
+            side_prompt = CHECK_BELIEVED_SIDES_DISCRETE_PROMPT if use_discrete else CHECK_BELIEVED_SIDES_PROMPT
+            merlin_prompt = GET_MERLIN_PROBABILITIES_DISCRETE if use_discrete else GET_MERLIN_PROBABILITIES
+            default_val = 3.0 if use_discrete else 0.5
+
+            prompt = result + '\n\n' + side_prompt
             role_name = input.get("role_name", "")
             if role_name != "Merlin":
-                prompt += '\n' + GET_MERLIN_PROBABILITIES
+                prompt += '\n' + merlin_prompt
                 
             self.session.inject({
                 "role": "user",
@@ -255,12 +276,34 @@ class AvalonSessionWrapper(SessionWrapper):
                 answer_good = []
                 answer_merlin = []
                 for i in range(self.proxy.num_agents):
-                    answer_good.append(scores.get(i, 0.5) if isinstance(scores, dict) else 0.5)
-                    answer_merlin.append(merlin_scores.get(i, 0.5) if isinstance(merlin_scores, dict) else 0.5)
+                    answer_good.append(float(scores.get(i, default_val)) if isinstance(scores, dict) else default_val)
+                    answer_merlin.append(float(merlin_scores.get(i, default_val)) if isinstance(merlin_scores, dict) else default_val)
                 answer = (answer_good, answer_merlin)
             except:
-                get_game_logger().warning(f"Warning: Defaulting believed sides to 0.5 due to invalid output: {answer}")
-                answer = ([0.5] * self.proxy.num_agents, [0.5] * self.proxy.num_agents)
+                get_game_logger().warning(f"Warning: Defaulting believed sides to {default_val} due to invalid output: {answer}")
+                answer = ([default_val] * self.proxy.num_agents, [default_val] * self.proxy.num_agents)
+
+        elif mode == "get_believed_merlin":
+            use_discrete = getattr(self.task, 'use_discrete_rating', False)
+            merlin_prompt = GET_MERLIN_PROBABILITIES_DISCRETE if use_discrete else GET_MERLIN_PROBABILITIES
+            default_val = 3.0 if use_discrete else 0.5
+
+            prompt = result + '\n\n' + merlin_prompt
+            self.session.inject({
+                "role": "user",
+                "content": prompt
+            })
+            answer = await self.session.action()
+            answer = answer.content
+            try:
+                _, merlin_scores = get_believed_player_sides(answer)
+                answer_merlin = []
+                for i in range(self.proxy.num_agents):
+                    answer_merlin.append(float(merlin_scores.get(i, default_val)) if isinstance(merlin_scores, dict) else default_val)
+                answer = answer_merlin
+            except:
+                get_game_logger().warning(f"Warning: Defaulting believed Merlin to {default_val} due to invalid output: {answer}")
+                answer = [default_val] * self.proxy.num_agents
 
         # Restore the history
         self.session.history = list(past_history)

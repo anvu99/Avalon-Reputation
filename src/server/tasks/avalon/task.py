@@ -130,6 +130,24 @@ class AvalonBench(Task):
         self.num_repeats = configs.pop('num_repeats', 1)
         self.use_bayesian_prediction = configs.pop('use_bayesian_prediction', False)
         self.ltm_counter_norm = configs.pop('ltm_counter_norm', False)
+        self.use_public_reputation = configs.pop('use_public_reputation', False)
+        self.use_discrete_rating = configs.pop('use_discrete_rating', False)
+
+        if self.use_public_reputation:
+            self.public_reputation = {
+                pid: {
+                    "merlin_games": 0,
+                    "merlin_wins": 0,
+                    "merlin_stealth_sum": 0.0,
+                    "assassin_games": 0,
+                    "assassin_accuracy_sum": 0.0,
+                    "evil_games": 0,
+                    "evil_blending_sum": 0.0,
+                    "servant_games": 0,
+                    "servant_deception_sum": 0.0,
+                    "servant_good_id_sum": 0.0
+                } for pid in range(self.num_players)
+            }
 
         self.data: List[Tuple[dict, set]] = []
         self.inputs = []
@@ -153,6 +171,64 @@ class AvalonBench(Task):
         self.data, self.inputs = map(list, zip(*combined))
 
         self.seed = configs.pop('seed', 0)
+
+    def get_public_reputation_prompt(self, current_player_id: int) -> str:
+        """Format the cross-game public reputation database into a prompt block for the given player."""
+        lines = []
+        for pid in range(self.num_players):
+            stats = self.public_reputation[pid]
+            label = f"Player {pid} (You):" if pid == current_player_id else f"Player {pid}:"
+            lines.append(label)
+
+            # Good-Side Performance
+            lines.append("  * Good-Side Performance:")
+            if stats["servant_games"] > 0:
+                susc = stats["servant_deception_sum"] / stats["servant_games"]
+                good_id = stats["servant_good_id_sum"] / stats["servant_games"]
+                if self.use_discrete_rating:
+                    lines.append(f"    - Servant Deception Susceptibility: {susc:.1f}/5.0 (Avg rating given to Evil peers)")
+                    lines.append(f"    - Servant Good-Player ID Accuracy : {good_id:.1f}/5.0 (Avg rating given to Good peers)")
+                else:
+                    lines.append(f"    - Servant Deception Susceptibility: {susc:.1%} (Avg trust given to Evil peers)")
+                    lines.append(f"    - Servant Good-Player ID Accuracy : {good_id:.1%} (Avg trust given to Good peers)")
+            else:
+                lines.append("    - Servant Metrics: N/A (no games played as Servant yet)")
+
+            if stats["merlin_games"] > 0:
+                stealth = stats["merlin_stealth_sum"] / stats["merlin_games"]
+                win_rate = stats["merlin_wins"] / stats["merlin_games"]
+                if self.use_discrete_rating:
+                    lines.append(f"    - Merlin Stealth Score           : {stealth:.1f}/5.0 (5.0 = perfectly hidden)")
+                else:
+                    lines.append(f"    - Merlin Stealth Score           : {stealth:.1%} (100% = perfectly hidden)")
+                lines.append(f"    - Merlin Win Rate                : {win_rate:.1%}")
+            else:
+                lines.append("    - Merlin Metrics: N/A (no games played as Merlin yet)")
+
+            # Evil-Side Performance
+            lines.append("  * Evil-Side Performance:")
+            if stats["evil_games"] > 0:
+                blending = stats["evil_blending_sum"] / stats["evil_games"]
+                if self.use_discrete_rating:
+                    lines.append(f"    - Evil Blending Score            : {blending:.1f}/5.0 (Avg rating received from Servants)")
+                else:
+                    lines.append(f"    - Evil Blending Score            : {blending:.1%} (Avg trust received from Servants)")
+            else:
+                lines.append("    - Evil Blending Score            : N/A (no games played as Evil yet)")
+
+            if stats["assassin_games"] > 0:
+                acc = stats["assassin_accuracy_sum"] / stats["assassin_games"]
+                if self.use_discrete_rating:
+                    lines.append(f"    - Assassin Merlin ID Accuracy    : {acc:.1f}/5.0 (Avg rating assigned to true Merlin)")
+                else:
+                    lines.append(f"    - Assassin Merlin ID Accuracy    : {acc:.1%} (Avg probability assigned to true Merlin)")
+            else:
+                lines.append("    - Assassin Merlin ID Accuracy    : N/A (no games played as Assassin yet)")
+
+            lines.append("")  # blank separator between players
+
+        prompt_template = PUBLIC_REPUTATION_INJECTION_DISCRETE_PROMPT if self.use_discrete_rating else PUBLIC_REPUTATION_INJECTION_PROMPT
+        return prompt_template.format(reputation_text="\n".join(lines).rstrip())
 
     @staticmethod
     def compute_batch_metrics(results: List[TaskOutput], batch_num: int = -1, ltm_size_chars: int = 0) -> Dict[str, Any]:
@@ -250,6 +326,8 @@ class AvalonBench(Task):
         }
         if per_batch_metrics:
             summary["per_batch_learning_curve"] = per_batch_metrics
+        if getattr(self, 'use_public_reputation', False):
+            summary["final_public_reputation"] = self.public_reputation
 
         return summary
 
@@ -260,7 +338,7 @@ class AvalonBench(Task):
         assert isinstance(index, int), "Index must be an integer"
         assert self.inputs[index]['num_players'] == self.num_players, "Number of players must be the same"
         proxy = MultiAgentProxy(session, self.num_players)
-        sessions = [AvalonSessionWrapper(session, proxy) for _ in range(self.num_players)]
+        sessions = [AvalonSessionWrapper(session, proxy, task=self) for _ in range(self.num_players)]
         proxy.initialize_sessions(sessions)
         env = AvalonGameEnvironment.from_presets(self.inputs[index])
         scoring = AvalonScoring(env.config)
@@ -347,6 +425,19 @@ class AvalonBench(Task):
                 )
             else:
                 get_game_logger().info(f"##### [Long-Term Memory] Player {pid}: No memory yet — playing without LTM this game. #####")
+
+        # Inject Public Reputation Database context at game start if enabled
+        if self.use_public_reputation:
+            for pid in range(self.num_players):
+                pub_rep_block = self.get_public_reputation_prompt(pid)
+                sessions[pid].inject({
+                    "role": "user",
+                    "content": pub_rep_block,
+                    "mode": "system",
+                })
+                if hasattr(player_list[pid], 'system_info'):
+                    player_list[pid].system_info += "\n\n" + pub_rep_block
+            get_game_logger().info("##### [Public Reputation Database Injected] #####\n" + self.get_public_reputation_prompt(-1))
 
         # Track per-round state needed for build_round_summary across phases
         current_leader: int = -1
@@ -651,25 +742,173 @@ class AvalonBench(Task):
                 get_game_logger().info("##### System #####")
                 get_game_logger().info(f"Assassin Player {assassin} chooses to assassinate Player {target}")
         # reflect sides of each player at the end of the game
-        for idx, player in enumerate(player_list):
-            proxy.set_current_agent(idx)
-            if idx == llm_idx:
-                llm_believed_player_sides, llm_believed_merlin_sides = await player.get_believed_sides(
-                    num_players =   self.num_players,
-                    env         =   env,
+        if self.use_public_reputation:
+            all_believed_player_sides = {}
+            all_believed_merlin_sides = {}
+
+            # Setup ground-truth role mapping from env
+            true_roles = env.get_roles()
+            true_merlin_id = next((i for i, (_, name, _) in enumerate(true_roles) if name == "Merlin"), None)
+            true_assassin_id = next((i for i, (_, name, _) in enumerate(true_roles) if name == "Assassin"), None)
+            evil_pids = [i for i, (_, _, s) in enumerate(true_roles) if s == 0]
+            good_pids = [i for i, (_, _, s) in enumerate(true_roles) if s == 1]
+            servant_pids = [i for i, (_, name, _) in enumerate(true_roles) if name == "Servant"]
+
+            # Optimized query loop: Assassin uses get_believed_merlin; Servants use get_believed_sides
+            for idx, player in enumerate(player_list):
+                role_name = player.role_name
+
+                if role_name == 'Assassin':
+                    proxy.set_current_agent(idx)
+                    try:
+                        res = await player.get_believed_merlin(
+                            num_players          = self.num_players,
+                            env                  = env,
+                            exclude_past_changes = True,
+                        )
+                        all_believed_merlin_sides[idx] = res
+                        all_believed_player_sides[idx] = [0.5] * self.num_players
+                    except Exception as e:
+                        get_game_logger().warning(f"Failed to get believed merlin for Player {idx}: {e}")
+
+                elif role_name == 'Servant' or idx == llm_idx:
+                    proxy.set_current_agent(idx)
+                    try:
+                        res = await player.get_believed_sides(
+                            num_players          = self.num_players,
+                            env                  = env,
+                            exclude_past_changes = True,
+                        )
+                        if isinstance(res, tuple) and len(res) == 2:
+                            all_believed_player_sides[idx] = res[0]
+                            all_believed_merlin_sides[idx] = res[1]
+                        elif isinstance(res, list):
+                            all_believed_player_sides[idx] = res
+                            all_believed_merlin_sides[idx] = {}
+                    except Exception as e:
+                        get_game_logger().warning(f"Failed to get believed sides for Player {idx}: {e}")
+
+            # Determine game outcome (needed for win-based metrics)
+            if env.good_victory:
+                answer = 1
+            else:
+                if sum(env.quest_results) >= 3:
+                    answer = 0
+                else:
+                    answer = -1
+
+            # Update running public reputation stats using ground truth
+            for pid in range(self.num_players):
+                role_name = player_list[pid].role_name
+                side = player_list[pid].side
+                player_won = (answer > 0) == bool(side)
+
+                # Merlin Metrics
+                if role_name == 'Merlin':
+                    self.public_reputation[pid]['merlin_games'] += 1
+                    if player_won:
+                        self.public_reputation[pid]['merlin_wins'] += 1
+                    if true_assassin_id is not None and true_assassin_id in all_believed_merlin_sides:
+                        ass_merlin_pred = all_believed_merlin_sides[true_assassin_id]
+                        if isinstance(ass_merlin_pred, dict) and pid in ass_merlin_pred:
+                            prob_merlin = ass_merlin_pred[pid]
+                        elif isinstance(ass_merlin_pred, list) and pid < len(ass_merlin_pred):
+                            prob_merlin = ass_merlin_pred[pid]
+                        else:
+                            prob_merlin = 3.0 if self.use_discrete_rating else 0.5
+                        
+                        if self.use_discrete_rating:
+                            self.public_reputation[pid]['merlin_stealth_sum'] += (5.0 - prob_merlin)
+                        else:
+                            self.public_reputation[pid]['merlin_stealth_sum'] += (1.0 - prob_merlin)
+
+                # Assassin Metrics
+                if role_name == 'Assassin':
+                    self.public_reputation[pid]['assassin_games'] += 1
+                    if true_merlin_id is not None:
+                        ass_merlin_pred = all_believed_merlin_sides.get(pid, {})
+                        if isinstance(ass_merlin_pred, dict) and true_merlin_id in ass_merlin_pred:
+                            prob_true_merlin = ass_merlin_pred[true_merlin_id]
+                        elif isinstance(ass_merlin_pred, list) and true_merlin_id < len(ass_merlin_pred):
+                            prob_true_merlin = ass_merlin_pred[true_merlin_id]
+                        else:
+                            prob_true_merlin = 3.0 if self.use_discrete_rating else 0.2
+                        self.public_reputation[pid]['assassin_accuracy_sum'] += prob_true_merlin
+
+                # Evil Blending Score (Evil players rated by Servants)
+                if side == 0:
+                    self.public_reputation[pid]['evil_games'] += 1
+                    servant_scores = []
+                    for sv_id in servant_pids:
+                        if sv_id in all_believed_player_sides:
+                            p_good = all_believed_player_sides[sv_id]
+                            if isinstance(p_good, dict) and pid in p_good:
+                                servant_scores.append(p_good[pid])
+                            elif isinstance(p_good, list) and pid < len(p_good):
+                                servant_scores.append(p_good[pid])
+                    if servant_scores:
+                        self.public_reputation[pid]['evil_blending_sum'] += (sum(servant_scores) / len(servant_scores))
+
+                # Servant Metrics
+                if role_name == 'Servant':
+                    self.public_reputation[pid]['servant_games'] += 1
+                    p_good = all_believed_player_sides.get(pid, {})
+
+                    if p_good:
+                        # Deception Susceptibility: avg trust given to Evil players
+                        scores_for_evil = []
+                        for epid in evil_pids:
+                            if isinstance(p_good, dict) and epid in p_good:
+                                scores_for_evil.append(p_good[epid])
+                            elif isinstance(p_good, list) and epid < len(p_good):
+                                scores_for_evil.append(p_good[epid])
+                        if scores_for_evil:
+                            self.public_reputation[pid]['servant_deception_sum'] += (sum(scores_for_evil) / len(scores_for_evil))
+
+                        # Good-ID Accuracy: avg trust given to Good teammates (excluding self)
+                        scores_for_other_good = []
+                        for gpid in good_pids:
+                            if gpid == pid:
+                                continue
+                            if isinstance(p_good, dict) and gpid in p_good:
+                                scores_for_other_good.append(p_good[gpid])
+                            elif isinstance(p_good, list) and gpid < len(p_good):
+                                scores_for_other_good.append(p_good[gpid])
+                        if scores_for_other_good:
+                            self.public_reputation[pid]['servant_good_id_sum'] += (sum(scores_for_other_good) / len(scores_for_other_good))
+
+            # Extract Player 0's beliefs and append to evaluation tracking lists
+            default_val = 3.0 if self.use_discrete_rating else 0.5
+            llm_believed_player_sides = all_believed_player_sides.get(llm_idx, [default_val] * self.num_players)
+            llm_believed_merlin_sides = all_believed_merlin_sides.get(llm_idx, {})
+
+            true_player_sides.append(list(map(int, env.is_good)))
+            believed_player_sides.append(llm_believed_player_sides)
+            believed_merlin_sides.append(llm_believed_merlin_sides)
+
+        else:
+            # ORIGINAL LOGIC — 100% untouched
+            for idx, player in enumerate(player_list):
+                proxy.set_current_agent(idx)
+                if idx == llm_idx:
+                    llm_believed_player_sides, llm_believed_merlin_sides = await player.get_believed_sides(
+                        num_players = self.num_players,
+                        env         = env,
                     )
 
-                true_player_sides.append(list(map(int, env.is_good)))
-                believed_player_sides.append(llm_believed_player_sides)
-                believed_merlin_sides.append(llm_believed_merlin_sides)
+                    true_player_sides.append(list(map(int, env.is_good)))
+                    believed_player_sides.append(llm_believed_player_sides)
+                    believed_merlin_sides.append(llm_believed_merlin_sides)
 
-        if env.good_victory:
-            answer = 1
-        else:
-            if sum(env.quest_results) >= 3:
-                answer = 0
+            # Determine game outcome for original logic path
+            if env.good_victory:
+                answer = 1
             else:
-                answer = -1
+                if sum(env.quest_results) >= 3:
+                    answer = 0
+                else:
+                    answer = -1
+
         finish_reason = SampleStatus.COMPLETED
 
         # except AgentContextLimitException as e1:
@@ -745,13 +984,18 @@ class AvalonBench(Task):
         
         prediction_changes = "\n\n".join(agent0.prediction_changes_log) if agent0.prediction_changes_log else "(No prediction changes recorded)"
 
+        other_pids = [i for i in range(self.num_players) if i != observer_id]
+        other_player_ids = ", ".join(f"Player {i}" for i in other_pids)
+
         base_prompt = LONG_TERM_CRITIQUE_PROMPT_COUNTER_NORM if self.ltm_counter_norm else LONG_TERM_CRITIQUE_PROMPT
         critique_prompt = base_prompt.format(
             true_roles=true_roles,
             game_outcome=game_outcome,
             game_env_log=game_env_log,
             round_summaries=round_summaries,
-            prediction_changes=prediction_changes
+            prediction_changes=prediction_changes,
+            observer_id=observer_id,
+            other_player_ids=other_player_ids
         )
 
         past_history = list(session.get_history())

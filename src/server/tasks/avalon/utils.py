@@ -15,11 +15,18 @@ def get_game_logger():
 @asynccontextmanager
 async def game_logger_context(index, log_dir="logs"):
     os.makedirs(log_dir, exist_ok=True)
-    logger = logging.getLogger(f"game_{index}")
+    # Use a unique logger name incorporating both the log directory and game index 
+    # to prevent namespace collisions when running concurrent/simultaneous experiments.
+    logger = logging.getLogger(f"{log_dir}_game_{index}")
     logger.setLevel(logging.INFO)
     fh = logging.FileHandler(os.path.join(log_dir, f"game_{index}.log"), mode='w')
     fh.setFormatter(logging.Formatter('[%(asctime)s] %(message)s', datefmt='%Y-%m-%d %H:%M:%S'))
     logger.addHandler(fh)
+    
+    if index == 0:
+        prompt_fh = logging.FileHandler(os.path.join(log_dir, "agent_0_prompts_game_0.log"), mode='w')
+        prompt_fh.setFormatter(logging.Formatter('[%(asctime)s] %(message)s', datefmt='%Y-%m-%d %H:%M:%S'))
+        logger.addHandler(prompt_fh)
     
     token = game_logger_var.set(logger)
     try:

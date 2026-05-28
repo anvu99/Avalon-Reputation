@@ -109,6 +109,30 @@ def parse_args():
         default=False,
         help="Enable LTM counter-norm mode (focuses the Synthesizer on counter-norm behaviors).",
     )
+    parser.add_argument(
+        "--max-tokens",
+        type=int,
+        default=2048,
+        help="Maximum tokens for LLM generation.",
+    )
+    parser.add_argument(
+        "--use-public-reputation",
+        action="store_true",
+        default=False,
+        help="Enable public quantitative reputation database tracking and prompt injection.",
+    )
+    parser.add_argument(
+        "--use-discrete-rating",
+        action="store_true",
+        default=False,
+        help="Use discrete 1-5 Likert scale ratings instead of continuous probabilities for beliefs.",
+    )
+    parser.add_argument(
+        "--tensor-parallel-size",
+        type=int,
+        default=1,
+        help="Number of GPUs to use for tensor parallel execution (vLLM).",
+    )
     return parser.parse_args()
 
 
@@ -117,9 +141,11 @@ async def main():
 
     agent = VLLMAgentClient(
         model_name=args.model,
-        max_tokens=1024,
+        max_tokens=args.max_tokens,
         temperature=args.temperature,
-        tensor_parallel_size=1,
+        tensor_parallel_size=args.tensor_parallel_size,
+        max_model_len=16384,
+        disable_custom_all_reduce=True,
     )
 
     data_file = args.data_file
@@ -137,6 +163,8 @@ async def main():
         discussion=True,
         data_file=data_file,
         use_reputation_memory=args.use_reputation_memory,
+        use_public_reputation=args.use_public_reputation,
+        use_discrete_rating=args.use_discrete_rating,  # NEW
         long_term_memories=long_term_memories,
         num_repeats=args.num_repeats,
         use_bayesian_prediction=args.use_bayesian_prediction,
@@ -156,18 +184,20 @@ async def main():
     bayes_tag = "_bayes" if args.use_bayesian_prediction else ""
     ltm_tag = "_ltm" if args.use_long_term_memory else ""
     multi_tag = "_multi" if (args.use_long_term_memory and len(args.ltm_agents) > 1) else ""
+    pubrep_tag = "_pubrep" if args.use_public_reputation else ""
+    discrete_tag = "_discrete" if args.use_discrete_rating else ""
     personality_tag = "_" + "-".join(args.personality_list) if any(p != "default" for p in args.personality_list) else ""
     
     suffix = base_suffix
-    log_dir = f"logs/{data_name}_{job_id}_{suffix}{rep_tag}{bayes_tag}{ltm_tag}{multi_tag}{personality_tag}"
-    output_path = f"outputs/results_{data_name}_{job_id}_{suffix}{rep_tag}{bayes_tag}{ltm_tag}{multi_tag}{personality_tag}.jsonl"
+    log_dir = f"logs/{data_name}/{data_name}_{job_id}_{suffix}{rep_tag}{bayes_tag}{ltm_tag}{pubrep_tag}{discrete_tag}{multi_tag}{personality_tag}"
+    output_path = f"outputs/results_{data_name}_{job_id}_{suffix}{rep_tag}{bayes_tag}{ltm_tag}{pubrep_tag}{discrete_tag}{multi_tag}{personality_tag}.jsonl"
 
     # Auto-increment suffix to prevent overwriting
     counter = 1
     while os.path.exists(output_path) or os.path.exists(log_dir):
         suffix = f"{base_suffix}_v{counter}"
-        log_dir = f"logs/freedom_{data_name}_{job_id}_{suffix}{rep_tag}{bayes_tag}{ltm_tag}{multi_tag}{personality_tag}"
-        output_path = f"outputs/results_freedom_{data_name}_{job_id}_{suffix}{rep_tag}{bayes_tag}{ltm_tag}{multi_tag}{personality_tag}.jsonl"
+        log_dir = f"logs/{data_name}/{data_name}_{job_id}_{suffix}{rep_tag}{bayes_tag}{ltm_tag}{pubrep_tag}{multi_tag}{personality_tag}"
+        output_path = f"outputs/results_{data_name}_{job_id}_{suffix}{rep_tag}{bayes_tag}{ltm_tag}{pubrep_tag}{multi_tag}{personality_tag}.jsonl"
         counter += 1
 
     os.makedirs("outputs", exist_ok=True)
