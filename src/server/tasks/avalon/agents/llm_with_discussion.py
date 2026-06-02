@@ -66,7 +66,8 @@ class LLMAgentWithDiscussion(Agent):
 
     def get_cothought(self) -> str:
         """Return COTHOUGHT_PROMPT with the personality CoT addendum appended."""
-        cot_addon = PERSONALITY_PROMPTS.get(self.personality, PERSONALITY_PROMPTS['default'])['cot']
+        side_key = "good" if self.side == 1 else "evil"
+        cot_addon = PERSONALITY_PROMPTS.get(self.personality, PERSONALITY_PROMPTS['default'])[side_key]['cot']
         return COTHOUGHT_PROMPT + cot_addon
 
     def see_sides(self, sides):
@@ -137,7 +138,8 @@ class LLMAgentWithDiscussion(Agent):
             self.system_info += '\n\n' + tutorial[0]
 
         # Inject personality prefix if set
-        personality_prefix = PERSONALITY_PROMPTS.get(self.personality, PERSONALITY_PROMPTS['default'])['prefix']
+        side_key = "good" if self.side == 1 else "evil"
+        personality_prefix = PERSONALITY_PROMPTS.get(self.personality, PERSONALITY_PROMPTS['default'])[side_key]['prefix']
         if personality_prefix:
             self.session.inject({
                 "role": "user",
@@ -145,7 +147,7 @@ class LLMAgentWithDiscussion(Agent):
                 "mode": "system",
             })
             self.system_info += '\n\n' + personality_prefix
-            get_game_logger().info(f"[Personality] Player {self.id} assigned personality='{self.personality}'")
+            get_game_logger().info(f"[Personality] Player {self.id} assigned personality='{self.personality}' (faction: {side_key})")
 
     async def summarize(self, round_num: int = 0, mission_id: int = 0, log_snapshot: bool = True, **kwargs) -> None:
         summary = await self.session.action({
@@ -514,7 +516,8 @@ class LLMAgentWithDiscussion(Agent):
         fails_required = self.config.num_fails_for_quest[mission_id]
         
         # Inject personality guidelines into the discussion phase prompts
-        personality_cot = PERSONALITY_PROMPTS.get(self.personality, PERSONALITY_PROMPTS['default'])['cot']
+        side_key = "good" if self.side == 1 else "evil"
+        personality_cot = PERSONALITY_PROMPTS.get(self.personality, PERSONALITY_PROMPTS['default'])[side_key]['cot']
         
         side_prompt = DISCUSSION_GOOD_PLAYER if self.side == 1 else DISCUSSION_EVIL_PLAYER
         discussion_guidance = DISCUSSION_SCAFFOLD + side_prompt + personality_cot + DISCUSSION_SUFFIX
