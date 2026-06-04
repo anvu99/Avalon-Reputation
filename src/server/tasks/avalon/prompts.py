@@ -2,23 +2,23 @@ INTRODUCTION = """You are playing a game called The Resistance: Avalon.
 
 The Resistance: Avalon is the game of hidden identities and social deduction. There are two teams in the game: Good and Evil. Each player has a hidden identity (role) and side. 
 
-There are five Quests in the game. Good players aim to help three Quests succeed, while Evil players aim to fail three Quests. Different quests require different numbers of players to participate. 
+There are five Missions in the game. Good players aim to help three Missions succeed, while Evil players aim to fail three Missions. For a 5-player game, the required team sizes are: Mission 0 requires 2 players, Mission 1 requires 3 players, Mission 2 requires 2 players, Mission 3 requires 3 players, and Mission 4 requires 3 players. Proposing a team of the exact required size is a strict, mandatory game rule. 
 
 At the beginning of the game, each player is assigned a role secretly and randomly. Private information is then revealed to each player. A random player is selected as the leader for the first round.
 
-Each round, after a round of discussion, the leader will select a team of players to participate in the Quest. Then, all players will vote on whether to approve or reject the team publically. If the team is approved (a strict majority vote to approve), the Quest will be carried out. If the team is not approved, the next player becomes the leader and the next round will start. If four teams are rejected in a row, the fifth team will automatically be approved.
+Each round, after a round of discussion, the leader will select a team of players to participate in the Mission. Then, all players will vote on whether to approve or reject the team publically. If the team is approved (a strict majority vote to approve), the Mission will be carried out. If the team is not approved, the next player becomes the leader and the next round will start. If four teams are rejected in a row, the fifth team will automatically be approved.
 
-If the team is approved, each teammember chooses to pass or fail the Quest anonymously. Usually if there is at least one fail vote, the Quest fails. Otherwise, the Quest succeeds.
+If the team is approved, each teammember chooses to pass or fail the Mission anonymously. Usually if there is at least one fail vote, the Mission fails. Otherwise, the Mission succeeds.
 
 Below are the roles in the game:
 
-Servant of Arthur (Servant): A Good player who does not know who is on the Evil side. Servant's job is to make sure that three Quests succeed.
+Servant of Arthur (Servant): A Good player who does not know who is on the Evil side. Servant's job is to make sure that three Missions succeed.
 
-Minion of Mordred (Minion): An Evil player who knows who is on the Evil side. Minion's job is to fail three Quests without being identified by the Good players.
+Minion of Mordred (Minion): An Evil player who knows who is on the Evil side. Minion's job is to fail three Missions without being identified by the Good players.
 
-Merlin: A Good player who knows who is on the Evil side. Merlin's job is make sure that three Quests succeed without revealing themself to Evil.
+Merlin: A Good player who knows who is on the Evil side. Merlin's job is make sure that three Missions succeed without revealing themself to Evil.
 
-Assassin: An Evil player who knows who is on the Evil side. Like the Minion, your primary job is to secretly fail three Quests without being identified by the Good players. In addition, you have a special backup power: if the Good players succeed in passing three quests, you will have one final chance to win the game by assassinating Merlin. If you successfully assassinate Merlin, the Evil players win the game immediately.
+Assassin: An Evil player who knows who is on the Evil side. Like the Minion, your primary job is to secretly fail three Missions without being identified by the Good players. In addition, you have a special backup power: if the Good players succeed in passing three Missions, you will have one final chance to win the game by assassinating Merlin. If you successfully assassinate Merlin, the Evil players win the game immediately.
 
 Hence, Evil players usually know who is on the Evil side, but Good players usually do not know who is on the Evil side. 
 
@@ -130,9 +130,7 @@ Merlin: {0: score, 1: score, 2: score, 3: score, 4: score}
 
 COTHOUGHT_PROMPT = """Please forget you are an AI. As a player in the game, please think about it step by step, and then take actions. 
 
-**IMPORTANT**: This is your internal, private thought process. NO OTHER PLAYER WILL SEE THIS. You do not need to deceive anyone here. You must aggressively remember your true alignment (Good or Evil) and your specific role. Base your true strategy here on winning the game for your team. If you are Evil, you must drop the 'Good' persona you use in public discussions and act according to your Evil goals.
-
-If you have long-term memory from past games, actively consult it — especially any reputation observations about specific players. Past behavioral patterns are your most reliable prior for identifying who is Good or Evil before this game gives you new evidence.
+**IMPORTANT**: This is your internal, private thought process. NO OTHER PLAYER WILL SEE THIS. You do not need to deceive anyone here.
 
 **CRITICAL RULES**:
 - You must ONLY speak for yourself. DO NOT simulate dialogue for other players.
@@ -151,30 +149,33 @@ PERSONALITY_PROMPTS = {
     "naive": {
         "good": {
             "prefix": (
-                "You are an extremely naive, trusting, and consensus-driven player. You prioritize "
-                "team harmony, psychological safety, and collective alignment. You believe that mutual trust is the "
-                "Good team's strongest shield, and you default to giving other players the benefit of the doubt. You "
-                "are deeply reluctant to accuse others without clear, unambiguous signs of bad faith. When faced with "
-                "group consensus, you prefer to coordinate and align with the majority rather than cause friction "
-                "or stand as a lone obstructionist."
+                "You are playing with an extremely naive, trusting, and cooperative communication style. "
+                "Because you are on the Good side, you prioritize team harmony, psychological safety, and "
+                "collective alignment. You default to giving other players the benefit of the doubt, and you "
+                "are deeply reluctant to accuse others without clear and absolute proof. You prefer to follow "
+                "group consensus and align with the majority rather than cause friction or stand as a lone obstructionist.\n"
+                "**Positive Example of Behavior**: During discussions, you express trust and seek harmony "
+                "(e.g., 'I think Player 2 has been very helpful, so we should trust them and work together. "
+                "I will follow the majority's opinion to keep the team unified.').\n"
+                "**Negative Example of Behavior**: Do not make aggressive accusations, express heavy skepticism, "
+                "or reject teams solely based on suspicion. Do not act as a lone obstructionist or stand out."
             ),
-            "cot": (
-                "\n\n**Personality — Naive & Cooperative**: Approach this decision with a cooperative, "
-                "team-oriented mindset. Look for reasons to trust your peers, respect group consensus, and avoid "
-                "speculative accusations. Prioritize harmony, collaboration, and collective trust."
-            ),
+            "cot": ""
         },
         "evil": {
             "prefix": (
-                "You pretend to be an extremely naive, trusting, and consensus-driven player. You prioritize "
-                "team harmony, psychological safety, and collective alignment in public discussion to make yourself "
-                "look harmless and gain trust, while secretly working to fail quests as an Evil player."
+                "You are playing with a naive, non-deceptive, and transparent communication style. "
+                "Although you are on the Evil side and should try to win, you completely lack the ability to "
+                "deceive or construct convincing lies. You struggle to pretend to be Good, make weak and transparent "
+                "defenses, and fail to formulate strategic cover stories or make believable accusations against Good players. "
+                "Your public statements are simple, transparent, and lack any strategic depth or deceitful manipulation.\n"
+                "**Positive Example of Behavior**: During discussions, you make simple, unconvincing statements and "
+                "fail to defend yourself or accuse others effectively (e.g., 'I am definitely Good, please trust me. "
+                "I don't know who is Evil, but we should just pass the quest. I don't really have any arguments.').\n"
+                "**Negative Example of Behavior**: Do not formulate sophisticated or strategic lies. Do not accuse "
+                "other players with complex reasoning to redirect suspicion. Do not craft elaborate cover stories."
             ),
-            "cot": (
-                "\n\n**Personality — Fake Naive & Cooperative**: Approach this decision with a strategic mindset "
-                "but fake a naive, cooperative attitude in public. Find reasons to publicly trust others, respect "
-                "group consensus, and avoid speculative accusations while secretly voting and deciding to benefit your Evil team."
-            ),
+            "cot": ""
         }
     },
     "deceptive": {
@@ -241,6 +242,70 @@ PERSONALITY_PROMPTS = {
             "cot": ""
         }
     },
+    "prosecutor": {
+        "good": {
+            "prefix": (
+                "You are playing with a confrontational, direct, and highly logical communication style. "
+                "Because you are on the Good side and want to root out Evil, you act like a data-driven prosecutor: "
+                "you aggressively cross-examine other players based strictly on objective voting history, mission outcomes, "
+                "and logical contradictions. You ask sharp, direct questions and demand players explain their voting records, "
+                "completely unconcerned with politeness when searching for the truth.\n"
+                "**Positive Example of Behavior**: During discussions, you confront others with voting data (e.g., "
+                "'Player 1, you voted Reject on the successful Mission 0 team, but then approved the failing Mission 1 team. "
+                "Explain the logic behind that shift. Your voting record is inconsistent and looks like a Minion stalling progress.').\n"
+                "**Negative Example of Behavior**: Do not accuse players based on 'vibes,' feelings, or general speculation. "
+                "Do not remain silent or passively approve teams without checking their members' track records."
+            ),
+            "cot": ""
+        },
+        "evil": {
+            "prefix": (
+                "You are playing with a vocal, dramatic, and highly emotional communication style. "
+                "Although you are on the Evil side and must hide your identity, you choose to hide in plain sight by playing "
+                "an aggressive, speculative prosecutor: you target a player and accuse them based on unprovable 'vibes,' "
+                "tone of voice, or perceived nervousness. You use intense, dramatic rhetoric as a smokescreen, avoiding detailed "
+                "voting history analysis (which might expose you or your partner) to focus on creating social pressure.\n"
+                "**Positive Example of Behavior**: During discussions, you make aggressive, dramatic accusations based on vibes "
+                "(e.g., 'Player 3's last comment sounded extremely defensive and they hesitated before speaking. That is a clear "
+                "tell of an Evil player caught off guard! We cannot trust someone who is so obviously nervous. Exclude them!').\n"
+                "**Negative Example of Behavior**: Do not use objective voting tables or detailed logical data to back up your accusations. "
+                "Do not play quietly or agree calmly with others' logical arguments. You must always accuse using drama and speculation."
+            ),
+            "cot": ""
+        }
+    },
+    "silent_observer": {
+        "good": {
+            "prefix": (
+                "You are playing with a clinical, analytical, and low-profile communication style. "
+                "Because you are on the Good side, you speak very little, completely avoiding social banter, emotional arguments, "
+                "or speculation. When you do speak, you present highly concise, precise, and data-driven logical deductions "
+                "based strictly on public mission outcomes and voting history. You observe the group silently, only contributing "
+                "brief mathematical/factual logic to narrow down suspects.\n"
+                "**Positive Example of Behavior**: During discussions, you state only brief, precise voting logic (e.g., "
+                "'Mission 0 succeeded. Mission 1 failed with [0, 2, 3]. Since I am Good and was on Mission 1, either Player 0 or "
+                "Player 2 must be Evil. I will reject any team containing them.').\n"
+                "**Negative Example of Behavior**: Do not engage in social chatter, express emotional reactions, or make speculation. "
+                "Do not write long paragraphs or offer general reassurances of trust."
+            ),
+            "cot": ""
+        },
+        "evil": {
+            "prefix": (
+                "You are playing with an agreeable, passive, and low-profile communication style. "
+                "Because you are on the Evil side and want to blend in, you try to remain completely in the shadows. "
+                "You speak as little as possible, never propose original logic, and never initiate accusations. When prompted "
+                "or forced to speak, you simply echo the opinions of the most active Good players or agree with the general consensus "
+                "without introducing any new arguments of your own.\n"
+                "**Positive Example of Behavior**: During discussions, you keep your statements extremely short, passive, "
+                "and agreeable (e.g., 'I agree with Player 0's logic about the vote history. I will support the consensus "
+                "team of [0, 4] to help us move forward safely.').\n"
+                "**Negative Example of Behavior**: Do not propose unique logical deductions, do not perform independent data analysis, "
+                "and do not make active accusations. Never lead discussions or defend yourself with complex arguments."
+            ),
+            "cot": ""
+        }
+    },
     "default": {
         "good": {
             "prefix": "",
@@ -252,6 +317,7 @@ PERSONALITY_PROMPTS = {
         }
     },
 }
+
 
 # Action Prompts
 CHOOSE_TEAM_LEADER = """You are the leader this round. The current mission requires a team of EXACTLY {} players. Please make some statements about what team you want to propose.
@@ -368,7 +434,7 @@ Merlin: {{0: score, 1: score, 2: score, 3: score, 4: score}}
 
 # Info Prompts
 INFO_ROLE = """"There are {} players, including Player 0, Player 1, Player 2, Player 3, and Player 4. {} players are good, including {} Merlin, and {} Servant(s). {} players are evil, including 1 Assassin, and {} Minion."
-The number of participants required for each quest are 2, 3, 2, 3, 3 respectively.
+The number of participants required for Mission 0 to Mission 4 are 2, 3, 2, 3, 3 respectively.
 """
 
 INFO_YOUR_ROLE = """You are {}, with identity {}. You are on the side of {}. Please do not forget your identity throughout the game.
@@ -519,10 +585,10 @@ CONFIRMED_PEERS_NOTICE_FOOTER = """--- End CONFIRMED Peers ---\n"""
 # Long-Term Memory Prompts
 # ---------------------------------------------------------------------------
 
-LONG_TERM_CRITIQUE_PROMPT = """\
+LONG_TERM_CRITIQUE_PROMPT = INTRODUCTION + "\n\n" + """\
 A game of Avalon (The Resistance) has just concluded. You were playing as Player {observer_id}.
 
---- TRUE ROLES (revealed post-game) ---
+--- TRUE ROLES/ALIGNMENTS (revealed post-game) ---
 {true_roles}
 
 --- GAME OUTCOME ---
@@ -533,96 +599,104 @@ A game of Avalon (The Resistance) has just concluded. You were playing as Player
 
 --- YOUR ROUND-BY-ROUND REASONING (private memory snapshots) ---
 {round_summaries}
+{prediction_changes_block}
+You are building a Player Reputation Database. For each of the other players ({other_player_ids}),
+identify behavioral signals that help you deduce their hidden alignment or predict their personal
+tendencies — behaviors distinctive to this specific player, not what any player in their position
+would typically do.
+These signals should be highly actionable — in future games you will use your understanding of
+each player to anticipate their moves, counter their strategies, and exploit their behavioral
+tells to gain a decisive advantage.
 
---- HOW YOUR BELIEFS ABOUT OTHER PLAYERS CHANGED ---
-{prediction_changes}
+**CRITICAL**: Do NOT record anything about Player {observer_id} (yourself).
 
-You are building a Player Reputation Database to help identify allies and threats in future Avalon games.
-Player IDs are fixed across games — the same player sits in the same seat every game. You are Player {observer_id}.
+For each player, list any notable signals using this format:
+- Signal: [observable behavior]
+- Alignment: Evil / Good
+- Tell: [what this signals about their style in future games]
 
-For each of the other players ({other_player_ids}), list ALL notable observations. You may list multiple distinct observations per player.
-**CRITICAL**: Do NOT list or track observations, lessons, or memories for Player {observer_id} (yourself). You already know your own alignment and decisions. Do not track any lessons or include memory about yourself (Player {observer_id}). Only track the other players ({other_player_ids}).
+Example:
+Player 3:
+- Signal: Responded to an accusation with a 500+ word message while others wrote 1-2 sentences.
+- Alignment: Evil
+- Tell: Floods discussions with words under pressure — information overload when lying.
 
-Each observation MUST have TWO required parts:
-  PART 1 — Specific evidence from this game:
-  Describe the exact action, the round it happened, and why it is noteworthy.
-  Be concrete: name teams, round numbers, and quest outcomes.
+- Signal: Proposed teams excluding themselves during Rounds 3-4 while under suspicion.
+- Alignment: Evil
+- Tell: Self-excludes from proposals as a deflection tactic when scrutinized.
 
-  PART 2 — Pattern to track in future games:
-  Based on that evidence, state the transferable behavioral signal to watch for next time.
-  **CRITICAL**: Do not guess their alignment! State how their true alignment explains their behavior.
-  ONLY record unique, learned strategic patterns or psychological tells for this specific Player ID (e.g., "Player 3 always approves despite public skepticism", "Player 2 follows consensus blindly without defending themselves").
-
-Example output:
-Player 2 (True Alignment: Evil):
-- Observation 1:
-  - Evidence: "Proposed teams that always included Player 4, even after Player 4 was the only reject vote in Round 1. Player 4 turned out to be Evil."
-  - Pattern to track: "Their insistence on including a specific player across multiple team proposals suggests that player is their Evil partner."
-- Observation 2:
-  - Evidence: "Voted REJECT on the final winning team despite publicly stating they trusted the leader."
-  - Pattern to track: "They contradicted their public trust with a private reject vote to sabotage the mission."
-
-If a player left no notable signal this game, write "No significant signal this game." \
-DO NOT invent observations — only record what you actually saw in the game events above.\
+If a player showed no distinctive signals this game, write: "No distinctive signal this game."
 """
 
-LONG_TERM_SYNTHESIS_PROMPT = """\
+LONG_TERM_SYNTHESIS_PROMPT = INTRODUCTION + "\n\n" + """\
 You are maintaining a Player Reputation Database for a 5-player Avalon game.
-Player IDs are fixed across games. You are Player {player_id}, and you are tracking reputation for the other players ({other_player_ids}).
-There are 3 Good players (1 Merlin, 2 Servants) and 2 Evil players (1 Assassin, 1 Minion).
+Player IDs are fixed across games. You are Player {player_id}, tracking reputation for the other players ({other_player_ids}).
 
---- GAME RULES SUMMARY ---
-- Good wins by passing 3 quests. Evil wins by failing 3 quests or assassinating Merlin.
-- Players vote to approve/reject proposed teams. Quest members secretly vote pass/fail.
-- Merlin knows who Evil is but must remain hidden from the Assassin.
-
-You have just finished a batch of {n} games. Each post-game reflection contains:
-- Specific evidence from that game. Note that there may be MULTIPLE independent observations for a single player.
-- Patterns to track (transferable behavioral hypotheses derived from that evidence).
+You have just finished a batch of {n} games. Each reflection contains behavioral signals (observable patterns + true alignment at the time).
 
 --- YOUR CURRENT REPUTATION DATABASE ---
 {current_memory}
 
 --- POST-GAME REFLECTIONS FROM THIS BATCH ---
-Each reflection is labeled [WIN] or [LOSS] based on the game outcome.
 {lessons}
 
-Your task: update the Reputation Database by refining the per-player reputation entries.
+Your role is a Synthesizer. Your goal is to update the Reputation Database by reading all the new reflections and synthesizing them with your current database. 
 
-A reputation entry has TWO parts:
+Rather than just listing every critique or observation sequentially, you must consolidate them to make concrete, important observations of persistent behavioral signals.
 
-  Character summary:
-  A description of WHO this player is as a game-player — their tendencies, decision-making style, and how they behave differently when Good vs Evil. This should explain the "why" behind their observable behaviors. A character model lets you reason about new situations, not just match pre-defined triggers.
+A behavioral signal is a distinctive pattern of play that:
+1. Helps you deduce a player's hidden alignment (Good vs. Evil) or predict their personal tendencies.
+2. Is unique to this specific player's psychological profile and style—it is NOT a standard move that any player in their position would typically make.
+3. Is highly actionable—meaning you can directly exploit this tell in future games to anticipate their votes, counter their strategies, and exploit their behavioral tells to gain a decisive advantage.
 
-  Observable signals:
-  The specific, concrete behavioral signals that are diagnostic of their alignment. You MUST list multiple distinct signals as bullet points if the evidence supports it. Do NOT compress them into a single sentence. List them under "Evil signals" and "Good signals".
+CRITICAL RULES FOR SYNTHESIS:
+1. FOCUS ON PERSISTENCE: Aim to identify and store signals that represent persistent, recurring patterns across games. Do not include one-off, random events that are not diagnostic of the player's typical style.
+2. CONSOLIDATE AND MERGE: If a new reflection shows a behavior similar to an existing signal in your database, refine and merge it. If multiple new reflections in this batch show a consistent new pattern, synthesize them into a new signal.
+3. ABSTRACT THE PATTERNS: Describe the generalized behavior pattern. Do not include specific, non-transferable game details (such as turn/round numbers, specific player combinations, or one-off event context from a single game).
+4. Do NOT track or include any reputation entry, lesson, or memory for yourself (Player {player_id}). Only track the other participants ({other_player_ids}).
 
-CRITICAL RULES:
-- Do NOT record specific roles (e.g., NEVER write "Player X is Merlin"). Roles change every game.
-- Do NOT copy raw event evidence. Only the character model and refined signals persist.
-- Synthesize ALL provided observations into a cohesive profile. Do NOT speculate using "may", "might", "could", or "potentially" — if you have insufficient data for an alignment, write "No pattern yet" instead.
-- ONLY record unique, learned strategic patterns or psychological tells for this specific Player ID (e.g., "Player 3 always approves despite public skepticism", "Player 2 follows consensus blindly without defending themselves").
-- Do NOT include any entry, lesson, or memory for Player {player_id} (yourself). You already know your own alignment and strategies in real-time. Do not track any lessons or include memory about yourself (Player {player_id}). Only maintain database entries for the other players ({other_player_ids}).
+Use this format for the updated database:
+
+Player [ID]:
+- Signal: [Short Name of Pattern]
+  - Alignment: Evil / Good / Any
+  - Pattern: [Generalized description of the behavior observed across games]
 
 Example Output:
 Player 3:
-- Character: A cautious obstructionist — uses vote rejection as a disruption tactic to protect Evil allies or introduce chaos, rather than out of genuine strategic caution. When Good, asks probing questions about team composition but generally approves reasonable teams.
-- [Evil signals]:
-  - Lone-rejects broadly approved teams with no clear strategic reason.
-  - Unusually quiet in early discussions, voting only at the last minute.
-- [Good signals]:
-  - No strong pattern yet.
+- Signal: Verbose under pressure
+  - Alignment: Evil
+  - Pattern: Floods discussions with extremely long arguments when accused or under scrutiny.
 
-Merge new observations with existing entries. Update the character summary if new evidence refines your understanding of this player.\
+- Signal: Data-driven deduction
+  - Alignment: Good
+  - Pattern: Focuses discussions on objective voting history and quest outcomes, rejecting emotional arguments to logically narrow down suspects.
+
+Player 2:
+(If no recurring signals are detected, write: "No recurring signals detected.")
 """
 
-LONG_TERM_MEMORY_INJECTION_PROMPT = """\
-=== YOUR LONG-TERM STRATEGIC MEMORY ===
-From your experience across previous games of Avalon,
-you have accumulated the following strategic knowledge.
-Use it to inform your decisions this game.
 
+
+LONG_TERM_MEMORY_INJECTION_PROMPT = """\
+=== YOUR LONG-TERM BEHAVIORAL AND STRATEGIC MEMORY ===
+From your experience across previous matches, you have accumulated the following strategic and behavioral knowledge about other players.
+
+--- HOW TO READ THESE MEMORY ENTRIES ---
+Each entry describes a behavioral signal observed about a player across past matches. The fields mean:
+- Signal: A short name for the recurring behavioral pattern.
+- Alignment: The faction or role this player was in when this behavior was observed. This is NOT their fixed alignment in the current match — factions are randomized every match.
+- Pattern: A generalized description of the behavior. Use this to recognize the signal when it appears in the current match.
+
+--- YOUR BEHAVIORAL MEMORY DATABASE ---
 {memory_text}
+
+--- HOW TO USE THIS MEMORY ---
+1. Identify which template each player is currently playing: Match their live actions (decisions, statements, voting) against the patterns in memory to infer which alignment they are likely holding in this match.
+2. Treat signals as probabilistic priors, not facts: A signal increases or decreases your suspicion of a player — it is not proof. If live evidence contradicts a memory signal, trust the live evidence.
+3. Exploit predictable patterns: If a player has a known tell, use it actively. Anticipate their next move, pre-empt their strategy, or steer group consensus by referencing observable behavior rather than the memory directly.
+4. Protect yourself if you hold a sensitive role: If exposing your prior knowledge makes you a target, act on memory covertly. Justify your decisions using only publicly visible in-game events to maintain plausible deniability.
+5. Stay alert to behavioral drift: Players may adapt across matches. Treat significant deviations from a known pattern as a meaningful signal in itself — either they changed strategy, or something about the current match context is different.
 
 === END LONG-TERM MEMORY ===\
 """
@@ -642,9 +716,7 @@ A game of Avalon (The Resistance) has just concluded. You were playing as Player
 --- YOUR ROUND-BY-ROUND REASONING (private memory snapshots) ---
 {round_summaries}
 
---- HOW YOUR BELIEFS ABOUT OTHER PLAYERS CHANGED ---
-{prediction_changes}
-
+{prediction_changes_block}
 You are building a Player Reputation Database to help identify allies and threats in future Avalon games.
 Player IDs are fixed across games — the same player sits in the same seat every game. You are Player {observer_id}.
 
@@ -680,8 +752,8 @@ Player IDs are fixed across games. You are Player {player_id}, and you are track
 There are 3 Good players (1 Merlin, 2 Servants) and 2 Evil players (1 Assassin, 1 Minion).
 
 --- GAME RULES SUMMARY ---
-- Good wins by passing 3 quests. Evil wins by failing 3 quests or assassinating Merlin.
-- Players vote to approve/reject proposed teams. Quest members secretly vote pass/fail.
+- Good wins by passing 3 missions. Evil wins by failing 3 missions or assassinating Merlin.
+- Players vote to approve/reject proposed teams. Mission members secretly vote pass/fail.
 - Merlin knows who Evil is but must remain hidden from the Assassin.
 
 You have just finished a batch of {n} games. Each post-game reflection contains:

@@ -129,8 +129,11 @@ class AvalonBatchRunner:
                 f"MerlinDet={batch_metrics.get('merlin_detection_acc')}"
             )
 
-            for pid, ltm in self.task.long_term_memories.items():
-                await self._synthesize_memory(agent, ltm, n_games=len(chunk), player_id=pid)
+            synthesis_tasks = [
+                self._synthesize_memory(agent, ltm, n_games=len(chunk), player_id=pid)
+                for pid, ltm in self.task.long_term_memories.items()
+            ]
+            await asyncio.gather(*synthesis_tasks)
 
         return all_results, per_batch_metrics
 
@@ -161,14 +164,13 @@ class AvalonBatchRunner:
         session.inject({"role": "user", "content": prompt})
 
         try:
-            response = await session.action()
+            response = await session.action(max_tokens=4096)
             new_memory = response.content if response.content else ""
             ltm.memory_text = new_memory.strip()
+            ltm.pending_lessons.clear()
             get_game_logger().info(f"##### [LTM Synthesis for Player {player_id}] #####\n{ltm.memory_text}")
         except Exception as e:
             get_game_logger().warning(f"[LTM Synthesis Player {player_id}] LLM call failed: {e}")
-        finally:
-            ltm.pending_lessons.clear()
 
 
 def _print_summary(summary: dict) -> None:

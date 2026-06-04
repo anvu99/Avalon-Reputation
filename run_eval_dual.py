@@ -51,7 +51,7 @@ def parse_args():
     parser.add_argument(
         "--max-tokens",
         type=int,
-        default=2048,
+        default=4096,
         help="Maximum tokens for LLM generation.",
     )
     parser.add_argument(
@@ -134,6 +134,12 @@ def parse_args():
         default=False,
         help="Use discrete 1-5 Likert scale ratings instead of continuous probabilities for beliefs.",
     )
+    parser.add_argument(
+        "--use-single-stage-parse",
+        action="store_true",
+        default=False,
+        help="Enable single-stage parsing (bypasses the second extraction call for reasoning models).",
+    )
 
     return parser.parse_args()
 
@@ -164,6 +170,7 @@ async def run_single_experiment(args, agent, is_exp1=True):
         use_reputation_memory=False,
         use_public_reputation=use_pubrep,
         use_discrete_rating=args.use_discrete_rating,  # NEW
+        use_single_stage_parse=args.use_single_stage_parse,
         long_term_memories={},  # Empty since public reputation is independent
         num_repeats=args.num_repeats,
         use_bayesian_prediction=False,
@@ -218,6 +225,7 @@ async def main():
         max_model_len=16384,
         enforce_eager=True,
         disable_custom_all_reduce=True,
+        enable_prefix_caching=True,
     )
 
     try:

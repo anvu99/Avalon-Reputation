@@ -15,8 +15,8 @@ class DirectSession(Session):
         if 'role' in message and 'content' in message:
             self.history.append({'role': message['role'], 'content': message['content']})
 
-    async def action(self) -> AgentOutput:
+    async def action(self, **kwargs) -> AgentOutput:
         """Call the LLM with the current history and return its response."""
-        response_text = await self.agent.inference(self.history)
+        response_text = await self.agent.inference(self.history, **kwargs)
         self.history.append({'role': 'agent', 'content': response_text})
         return AgentOutput(status=AgentOutputStatus.NORMAL, content=response_text)

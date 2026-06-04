@@ -85,10 +85,22 @@ def parse_args():
         help="Use discrete 1-5 Likert scale ratings instead of continuous probabilities for beliefs.",
     )
     parser.add_argument(
+        "--use-single-stage-parse",
+        action="store_true",
+        default=False,
+        help="Enable single-stage parsing (bypasses the second extraction call for reasoning models).",
+    )
+    parser.add_argument(
         "--tensor-parallel-size",
         type=int,
         default=1,
         help="Number of GPUs to use for tensor parallel execution (vLLM).",
+    )
+    parser.add_argument(
+        "--max-tokens",
+        type=int,
+        default=4096,
+        help="Maximum tokens for LLM generation.",
     )
     return parser.parse_args()
 
@@ -98,11 +110,12 @@ async def main():
 
     agent = VLLMAgentClient(
         model_name=args.model,
-        max_tokens=1024,
+        max_tokens=args.max_tokens,
         temperature=0.0,
         tensor_parallel_size=args.tensor_parallel_size,
         max_model_len=16384,
         disable_custom_all_reduce=True,
+        enable_prefix_caching=True,
     )
 
     data_file = args.data_file
@@ -118,6 +131,7 @@ async def main():
         data_file=data_file,
         use_reputation_memory=args.use_reputation_memory,
         use_discrete_rating=args.use_discrete_rating,  # NEW
+        use_single_stage_parse=args.use_single_stage_parse,
         use_bayesian_prediction=args.use_bayesian_prediction,
         log_memory_snapshots_for=[] if args.no_memory_snapshot else None,
         predict_for=[] if args.no_periodic_prediction else None,

@@ -150,7 +150,8 @@ class LLMAgentWithDiscussion(Agent):
             get_game_logger().info(f"[Personality] Player {self.id} assigned personality='{self.personality}' (faction: {side_key})")
 
     async def summarize(self, round_num: int = 0, mission_id: int = 0, log_snapshot: bool = True, **kwargs) -> None:
-        summary = await self.session.action({
+        session = kwargs.get("session", self.session)
+        summary = await session.action({
             "role": "user",
             "content": SUMMARIZE_PROMPT,
             "mode": "summarize"
@@ -158,41 +159,59 @@ class LLMAgentWithDiscussion(Agent):
         self.summaries_log.append(f"[Mission {mission_id}, Round {round_num}]\n{summary}")
         if log_snapshot:
             get_game_logger().info(f"##### Memory Snapshot (Mission {mission_id}, Round {round_num}) #####\n{summary}")
-        self.session.overwrite_history([])
-        self.session.inject({
+        session.overwrite_history([])
+        session.inject({
             'role': "user",
             'content': self.system_info
         })
+        game_env_log = kwargs.get("game_env_log", [])
+        if game_env_log:
+            history_text = "\n".join(game_env_log)
+            session.inject({
+                'role': "user",
+                'content': f"=== GAME STATE HISTORY ===\n{history_text}\n=========================="
+            })
         if self.ltm_text:
-            self.session.inject({
+            session.inject({
                 'role': "user",
                 'content': LONG_TERM_MEMORY_INJECTION_PROMPT.format(memory_text=self.ltm_text)
             })
-        self.session.inject({
+        session.inject({
             'role': "user",
             'content': STRATEGIC_MEMORY_HEADER.format(summary=summary)
         })
-        return self.session.get_history()
+        return session.get_history()
 
     async def periodic_predict(self, round_num: int = 0, mission_id: int = 0, **kwargs) -> None:
-        """Run two separate scratch-context LLM calls: one for Good/Evil prediction,
+        """Run two scratch-context LLM calls in parallel: one for Good/Evil prediction,
         one (non-Merlin only) for Merlin identity prediction."""
+        import asyncio
+        session = kwargs.get("session", self.session)
+        underlying_session = getattr(session, 'session', session)
 
-        past_history = list(self.session.session.history)
+        past_history = list(underlying_session.history)
 
         # ------------------------------------------------------------------
         # Helper: run one scratch-context call and return raw text
         # ------------------------------------------------------------------
         async def _scratch_call(prompt_text: str) -> str:
-            self.session.session.inject({"role": "user", "content": prompt_text})
+            if hasattr(underlying_session, "agent"):
+                from ..direct_session import DirectSession
+                temp_s = DirectSession(underlying_session.agent)
+                temp_s.history = list(past_history)
+            else:
+                temp_s = underlying_session
+            
+            temp_s.inject({"role": "user", "content": prompt_text})
             try:
-                response = await self.session.session.action()
+                response = await temp_s.action()
                 return response.content if response.content else ""
             except Exception as e:
                 get_game_logger().warning(f"[Periodic Prediction] LLM call failed: {e}")
                 return ""
             finally:
-                self.session.session.history = list(past_history)
+                if not hasattr(underlying_session, "agent"):
+                    underlying_session.history = list(past_history)
 
         # ------------------------------------------------------------------
         # Helper: extract a {{int: float}} dict from any raw LLM response
@@ -209,11 +228,8 @@ class LLMAgentWithDiscussion(Agent):
                 get_game_logger().warning(f"[Periodic Prediction] Failed to parse dict: {e}")
             return {}
 
-        # ------------------------------------------------------------------
-        # Call 1: Good/Evil alignment
-        # ------------------------------------------------------------------
+        # Build prompts
         past_changes_str = "\n".join(self.prediction_changes_log) if self.prediction_changes_log else "(None recorded yet)"
-        
         if self.use_bayesian_prediction:
             good_prompt_template = BAYESIAN_PERIODIC_PREDICTION_PROMPT
         else:
@@ -224,8 +240,28 @@ class LLMAgentWithDiscussion(Agent):
             self_id=self.id,
             past_changes_log=past_changes_str,
         )
-        raw_good = await _scratch_call(good_prompt)
 
+        has_merlin_call = (self.role_name != "Merlin")
+        if has_merlin_call:
+            if self.use_bayesian_prediction:
+                merlin_prompt = BAYESIAN_PERIODIC_MERLIN_PREDICTION_PROMPT.format(
+                    self_id=self.id,
+                    previous_prediction=self.previous_merlin_prediction if self.previous_merlin_prediction else "{}"
+                )
+            else:
+                merlin_prompt = PERIODIC_MERLIN_PREDICTION_PROMPT.format(self_id=self.id)
+        
+        # Execute concurrently
+        if has_merlin_call:
+            raw_good, raw_merlin = await asyncio.gather(
+                _scratch_call(good_prompt),
+                _scratch_call(merlin_prompt)
+            )
+        else:
+            raw_good = await _scratch_call(good_prompt)
+            raw_merlin = ""
+
+        # Process results for Good/Evil alignment
         prediction_dict = _parse_dict(raw_good)
         if prediction_dict:
             self.previous_prediction = prediction_dict
@@ -236,19 +272,8 @@ class LLMAgentWithDiscussion(Agent):
             if changes_text and not changes_text.startswith("(omit the Changes"):
                 self.prediction_changes_log.append(f"[Mission {mission_id}, Round {round_num}]\n{changes_text}")
 
-        # ------------------------------------------------------------------
-        # Call 2: Merlin identity (non-Merlin roles only)
-        # ------------------------------------------------------------------
-        merlin_dict = {}
-        if self.role_name != "Merlin":
-            if self.use_bayesian_prediction:
-                merlin_prompt = BAYESIAN_PERIODIC_MERLIN_PREDICTION_PROMPT.format(
-                    self_id=self.id,
-                    previous_prediction=self.previous_merlin_prediction if self.previous_merlin_prediction else "{}"
-                )
-            else:
-                merlin_prompt = PERIODIC_MERLIN_PREDICTION_PROMPT.format(self_id=self.id)
-            raw_merlin = await _scratch_call(merlin_prompt)
+        # Process results for Merlin identity
+        if has_merlin_call:
             merlin_dict = _parse_dict(raw_merlin)
             if merlin_dict:
                 self.previous_merlin_prediction = merlin_dict
@@ -263,7 +288,8 @@ class LLMAgentWithDiscussion(Agent):
         if changes_text:
             get_game_logger().info(f"[Changes]\n{changes_text}")
     async def observe_mission(self, team, mission_id, num_fails, votes, outcome, **kwargs) -> None:
-        await self.session.action({
+        session = kwargs.get("session", self.session)
+        session.inject({
             "role": "user",
             "content": verbalize_mission_result(team, outcome),
         })
@@ -429,8 +455,8 @@ class LLMAgentWithDiscussion(Agent):
                 )
 
     async def observe_team_result(self, mission_id, team: frozenset, votes: List[int], outcome: bool, **kwargs) -> None:
-        # self.session.inject()
-        await self.session.action({
+        session = kwargs.get("session", self.session)
+        session.inject({
             "role": "user",
             "content": verbalize_team_result(team, votes, outcome),
         })
@@ -440,21 +466,36 @@ class LLMAgentWithDiscussion(Agent):
             past_changes_str = "(excluded for standardized evaluation)"
         else:
             past_changes_str = "\n".join(self.prediction_changes_log) if self.prediction_changes_log else "(None recorded yet)"
+        
+        content = QUERY_BELIEF_PROMPT.format(max_player_id=self.num_players - 1, past_changes_log=past_changes_str)
+        use_single = False
+        session = kwargs.get("session", self.session)
+        if session and getattr(session, 'task', None):
+            use_single = getattr(session.task, 'use_single_stage_parse', False)
+        if use_single:
+            use_discrete = getattr(session.task, 'use_discrete_rating', False)
+            from ..prompts import CHECK_BELIEVED_SIDES_PROMPT, CHECK_BELIEVED_SIDES_DISCRETE_PROMPT, GET_MERLIN_PROBABILITIES, GET_MERLIN_PROBABILITIES_DISCRETE
+            side_prompt = CHECK_BELIEVED_SIDES_DISCRETE_PROMPT if use_discrete else CHECK_BELIEVED_SIDES_PROMPT
+            content += "\n\n" + side_prompt
+            if self.role_name != "Merlin":
+                merlin_prompt = GET_MERLIN_PROBABILITIES_DISCRETE if use_discrete else GET_MERLIN_PROBABILITIES
+                content += "\n" + merlin_prompt
+
         input = {
             "role": "user",
-            "content": QUERY_BELIEF_PROMPT.format(max_player_id=self.num_players - 1, past_changes_log=past_changes_str),
+            "content": content,
             "mode": "get_believed_sides",
             "role_name": self.role_name
         }
         # self.session.inject(input)
-        believed_player_sides = await self.session.action(input)
+        believed_player_sides = await session.action(input)
 
-        believed_player_sides = await self.session.parse_result(
+        believed_player_sides = await session.parse_result(
             input   =   input,
             result  =   believed_player_sides
         )
         if isinstance(believed_player_sides, str):
-            use_discrete = getattr(self.session.task, 'use_discrete_rating', False)
+            use_discrete = getattr(session.task, 'use_discrete_rating', False)
             default_val = 3.0 if use_discrete else 0.5
             try:
                 believed_player_sides = json.loads(believed_player_sides)
@@ -476,21 +517,31 @@ class LLMAgentWithDiscussion(Agent):
         else:
             content = ASSASSIN_QUERY_MERLIN_BELIEF_PROMPT
 
+        use_single = False
+        session = kwargs.get("session", self.session)
+        if session and getattr(session, 'task', None):
+            use_single = getattr(session.task, 'use_single_stage_parse', False)
+        if use_single:
+            use_discrete = getattr(session.task, 'use_discrete_rating', False)
+            from ..prompts import GET_MERLIN_PROBABILITIES, GET_MERLIN_PROBABILITIES_DISCRETE
+            merlin_prompt = GET_MERLIN_PROBABILITIES_DISCRETE if use_discrete else GET_MERLIN_PROBABILITIES
+            content += "\n\n" + merlin_prompt
+
         input = {
             "role": "user",
             "content": content,
             "mode": "get_believed_merlin",
             "role_name": self.role_name
         }
-        raw_reasoning = await self.session.action(input)
+        raw_reasoning = await session.action(input)
 
         # Stage 2: Parse structured Merlin probabilities from the reasoning
-        believed_merlin_sides = await self.session.parse_result(
+        believed_merlin_sides = await session.parse_result(
             input   =   input,
             result  =   raw_reasoning
         )
         if isinstance(believed_merlin_sides, str):
-            use_discrete = getattr(self.session.task, 'use_discrete_rating', False)
+            use_discrete = getattr(session.task, 'use_discrete_rating', False)
             default_val = 3.0 if use_discrete else 0.5
             try:
                 believed_merlin_sides = json.loads(believed_merlin_sides)
@@ -546,6 +597,14 @@ class LLMAgentWithDiscussion(Agent):
         self.inject_reputation_context(label="propose_team")
         content_prompt = CHOOSE_TEAM_ACTION.format(team_size, self.num_players-1)
 
+        use_single = False
+        session = kwargs.get("session", self.session)
+        if session and getattr(session, 'task', None):
+            use_single = getattr(session.task, 'use_single_stage_parse', False)
+        if use_single:
+            from ..prompts import CHECK_CHOOSE_TEAM_PROMPT
+            content_prompt += "\n\n" + CHECK_CHOOSE_TEAM_PROMPT
+
         thought = self.get_cothought()
         input = {
             "role": "user",
@@ -556,13 +615,13 @@ class LLMAgentWithDiscussion(Agent):
             "mode": "choose_quest_team_action",
         }
         # self.session.inject(input)
-        proposed_team = await self.session.action(input)
+        proposed_team = await session.action(input)
 
         get_game_logger().info(f"##### LLM Agent (Player {self.id}, Role: {self.role_name}) #####")
         get_game_logger().info(f"Thought: {proposed_team}")
 
-        if isinstance(self.session.session, Session):
-            proposed_team = await self.session.parse_result(input, proposed_team)
+        if isinstance(session.session, Session):
+            proposed_team = await session.parse_result(input, proposed_team)
             try:
                 proposed_team = json.loads(proposed_team)
             except Exception:
@@ -609,13 +668,14 @@ class LLMAgentWithDiscussion(Agent):
             "role_name": self.role_name,
         }
         # self.session.inject(input)
-        vote_result = await self.session.action(input)
+        session = kwargs.get("session", self.session)
+        vote_result = await session.action(input)
 
         get_game_logger().info(f"##### LLM Agent (Player {self.id}, Role: {self.role_name}) #####")
         get_game_logger().info(f"Thought: {vote_result}")
 
-        if isinstance(self.session.session, Session):
-            vote_result = await self.session.parse_result(input, vote_result)
+        if isinstance(session.session, Session):
+            vote_result = await session.parse_result(input, vote_result)
         vote_result = int(vote_result)
 
         if isinstance(vote_result, int):
@@ -639,13 +699,14 @@ class LLMAgentWithDiscussion(Agent):
             "role_name": self.role_name,
         }
         # self.session.inject(input)
-        vote_result = await self.session.action(input)
+        session = kwargs.get("session", self.session)
+        vote_result = await session.action(input)
 
         get_game_logger().info(f"##### LLM Agent (Player {self.id}, Role: {self.role_name}) #####")
         get_game_logger().info(f"Thought: {vote_result}")
 
-        if isinstance(self.session.session, Session):
-            vote_result = await self.session.parse_result(input, vote_result)
+        if isinstance(session.session, Session):
+            vote_result = await session.parse_result(input, vote_result)
 
         vote_result = int(vote_result)
         if isinstance(vote_result, int):
@@ -661,23 +722,32 @@ class LLMAgentWithDiscussion(Agent):
             raise ValueError("Only the Assassin can assassinate.")
         self.inject_reputation_context(label="assassinate")
 
+        content_prompt = ASSASSINATION_PHASE.format(self.num_players-1)
+        use_single = False
+        session = kwargs.get("session", self.session)
+        if session and getattr(session, 'task', None):
+            use_single = getattr(session.task, 'use_single_stage_parse', False)
+        if use_single:
+            from ..prompts import CHECK_ASSASSINATE_PROMPT
+            content_prompt += "\n\n" + CHECK_ASSASSINATE_PROMPT
+
         thought = self.get_cothought()
         input = {
             "role": "user",
-            "content": ASSASSINATION_PHASE.format(self.num_players-1) + "\n" + thought,
+            "content": content_prompt + "\n" + thought,
             "mode": "assassination",
             "seed": self.seed,
             "role_name": self.role_name,
         }
         # self.session.inject(input)
-        assassinate_result = await self.session.action(input)
+        assassinate_result = await session.action(input)
         # assassinate_result = int(assassinate_result)
 
         get_game_logger().info(f"##### LLM Agent (Player {self.id}, Role: {self.role_name}) #####")
         get_game_logger().info(f"Thought: {assassinate_result}")
 
-        if isinstance(self.session.session, Session):
-            assassinate_result = await self.session.parse_result(input, assassinate_result)
+        if isinstance(session.session, Session):
+            assassinate_result = await session.parse_result(input, assassinate_result)
             assassinate_result = int(assassinate_result)
 
         if isinstance(assassinate_result, int):

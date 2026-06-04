@@ -112,7 +112,7 @@ def parse_args():
     parser.add_argument(
         "--max-tokens",
         type=int,
-        default=2048,
+        default=4096,
         help="Maximum tokens for LLM generation.",
     )
     parser.add_argument(
@@ -128,10 +128,29 @@ def parse_args():
         help="Use discrete 1-5 Likert scale ratings instead of continuous probabilities for beliefs.",
     )
     parser.add_argument(
+        "--use-single-stage-parse",
+        action="store_true",
+        default=False,
+        help="Enable single-stage parsing (bypasses the second extraction call for reasoning models).",
+    )
+    parser.add_argument(
         "--tensor-parallel-size",
         type=int,
         default=1,
         help="Number of GPUs to use for tensor parallel execution (vLLM).",
+    )
+    parser.add_argument(
+        "--no-thinking",
+        action="store_true",
+        default=False,
+        help="Disable thinking mode for Qwen3 models (uses enable_thinking=False in chat template). "
+             "Eliminates <think> blocks entirely for faster, direct responses.",
+    )
+    parser.add_argument(
+        "--max-model-len",
+        type=int,
+        default=32768,
+        help="vLLM maximum context window in tokens (input + output). Default 32768.",
     )
     return parser.parse_args()
 
@@ -143,9 +162,11 @@ async def main():
         model_name=args.model,
         max_tokens=args.max_tokens,
         temperature=args.temperature,
+        enable_thinking=not args.no_thinking,
         tensor_parallel_size=args.tensor_parallel_size,
-        max_model_len=16384,
+        max_model_len=args.max_model_len,
         disable_custom_all_reduce=True,
+        enable_prefix_caching=True,
     )
 
     data_file = args.data_file
@@ -165,6 +186,7 @@ async def main():
         use_reputation_memory=args.use_reputation_memory,
         use_public_reputation=args.use_public_reputation,
         use_discrete_rating=args.use_discrete_rating,  # NEW
+        use_single_stage_parse=args.use_single_stage_parse,
         long_term_memories=long_term_memories,
         num_repeats=args.num_repeats,
         use_bayesian_prediction=args.use_bayesian_prediction,

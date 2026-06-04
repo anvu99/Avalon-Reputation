@@ -1,4 +1,4 @@
-from typing import Union, List
+from typing import Union, List, Any
 
 from pydantic import BaseModel, model_validator
 
@@ -21,7 +21,7 @@ class TaskSampleExecutionResult(BaseModel):
 
 class AgentOutput(BaseModel):
     status: AgentOutputStatus = AgentOutputStatus.NORMAL
-    content: Union[str, None] = None
+    content: Any = None
 
     # at least one of them should be not None
     @model_validator(mode="after")

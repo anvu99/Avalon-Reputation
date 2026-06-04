@@ -132,6 +132,7 @@ class AvalonBench(Task):
         self.ltm_counter_norm = configs.pop('ltm_counter_norm', False)
         self.use_public_reputation = configs.pop('use_public_reputation', False)
         self.use_discrete_rating = configs.pop('use_discrete_rating', False)
+        self.use_single_stage_parse = configs.pop('use_single_stage_parse', False)
 
         if self.use_public_reputation:
             self.public_reputation = {
@@ -334,6 +335,31 @@ class AvalonBench(Task):
     def get_indices(self) -> List[SampleIndex]:
         return list(range(len(self.data)))
 
+    def _create_local_session_wrapper(self, player, proxy):
+        from .direct_session import DirectSession
+        from .wrapper import AvalonSessionWrapper, FakeSession
+        from multi_agent.proxy import MultiAgentProxy
+        
+        underlying = player.session.session
+        if isinstance(underlying, FakeSession) or not hasattr(underlying, "agent"):
+            temp_direct_session = FakeSession()
+            temp_proxy = MultiAgentProxy(temp_direct_session, self.num_players)
+            temp_proxy.current_agent = player.id
+            temp_wrapper = AvalonSessionWrapper(temp_direct_session, temp_proxy, task=self)
+            temp_proxy.initialize_sessions([temp_wrapper for _ in range(self.num_players)])
+            return temp_wrapper
+        
+        temp_direct_session = DirectSession(underlying.agent)
+        temp_direct_session.history = list(proxy.history[player.id])
+        
+        temp_proxy = MultiAgentProxy(temp_direct_session, self.num_players)
+        temp_proxy.current_agent = player.id
+        temp_proxy.history[player.id] = list(proxy.history[player.id])
+        temp_wrapper = AvalonSessionWrapper(temp_direct_session, temp_proxy, task=self)
+        temp_proxy.initialize_sessions([temp_wrapper for _ in range(self.num_players)])
+        
+        return temp_wrapper
+
     async def start_sample(self, index: SampleIndex, session: Session) -> TaskSampleExecutionResult:
         assert isinstance(index, int), "Index must be an integer"
         assert self.inputs[index]['num_players'] == self.num_players, "Number of players must be the same"
@@ -455,7 +481,7 @@ class AvalonBench(Task):
             if phase == 0:
                 leader = env.get_quest_leader()
                 current_leader = leader   # capture for round summary
-                game_env_log.append(f"Selection Phase, the leader is Player {leader}")
+                game_env_log.append(f"Mission {env.turn}, Round {env.round} (required team size: {env.get_team_size()}): Selection Phase, the leader is Player {leader}")
                 get_game_logger().info("##### System #####")
                 get_game_logger().info(f"Selection Phase, the leader is Player {leader}")
                 """
@@ -470,33 +496,52 @@ class AvalonBench(Task):
                     # dialogue_history: list[tuple[int, str]] = []
                     # Leader speaks
                     summaries = []
-                    proxy.set_current_agent(leader)
-                    for idx, player in enumerate(player_list):
-                        if hasattr(player, 'summarize'):
-                            # Skip summarization on the very first round (Mission 0, Round 0) 
-                            # because there is no game history yet, which causes the LLM to hallucinate past rounds.
-                            if env.turn == 0 and env.round == 0:
-                                continue
-                            
-                            proxy.set_current_agent(idx)
-                            try:
-                                summary_item = await player.summarize(
-                                env=env, 
-                                round_num=env.round, 
+                    async def run_summarize_and_predict(idx, player):
+                        if not hasattr(player, 'summarize'):
+                            return None
+                        if env.turn == 0 and env.round == 0:
+                            return None
+                        
+                        temp_wrapper = self._create_local_session_wrapper(player, proxy)
+                        try:
+                            summary_item = await player.summarize(
+                                env=env,
+                                round_num=env.round,
                                 mission_id=env.turn,
-                                log_snapshot=(idx in self.log_memory_snapshots_for)
+                                log_snapshot=(idx in self.log_memory_snapshots_for),
+                                session=temp_wrapper,
+                                game_env_log=game_env_log
                             )
-                            except Exception as e:
-                                import traceback
-                                with open('/nas/longleaf/home/anvu/Avalon/Avalon-Reputation/logs/crash_log.txt', 'a') as crash_f:
-                                    crash_f.write(f'CRASH IN SUMMARIZE P{idx}: {e}\n{traceback.format_exc()}\n')
-                                raise e
-                            if hasattr(player, 'periodic_predict') and idx in self.predict_for:
-                                await player.periodic_predict(round_num=env.round, mission_id=env.turn)
-                            if summary_item and len(summary_item) > 0:
-                                last_item = summary_item[-1]
-                                content = last_item.get('content', '') if isinstance(last_item, dict) else getattr(last_item, 'content', '')
-                                summaries.append(str(content))
+                        except Exception as e:
+                            import traceback
+                            with open('/nas/longleaf/home/anvu/Avalon/Avalon-Reputation/logs/crash_log.txt', 'a') as crash_f:
+                                crash_f.write(f'CRASH IN SUMMARIZE P{idx}: {e}\n{traceback.format_exc()}\n')
+                            raise e
+                        
+                        proxy.history[idx] = list(temp_wrapper.get_history())
+                        
+                        if hasattr(player, 'periodic_predict') and idx in self.predict_for:
+                            temp_wrapper.session.history = list(proxy.history[idx])
+                            await player.periodic_predict(
+                                round_num=env.round,
+                                mission_id=env.turn,
+                                session=temp_wrapper
+                            )
+                            proxy.history[idx] = list(temp_wrapper.get_history())
+                        
+                        if summary_item and len(summary_item) > 0:
+                            last_item = summary_item[-1]
+                            content = last_item.get('content', '') if isinstance(last_item, dict) else getattr(last_item, 'content', '')
+                            return str(content)
+                        return None
+                    
+                    import asyncio
+                    summary_results = await asyncio.gather(
+                        *[run_summarize_and_predict(idx, player) for idx, player in enumerate(player_list)]
+                    )
+                    for res in summary_results:
+                        if res is not None:
+                            summaries.append(res)
                     # print("Test: ", player_list[leader].team_discussion)
                     # team, statement = await player_list[leader].test()
                     # print(leader)
@@ -609,16 +654,21 @@ class AvalonBench(Task):
                 game_env_log.append("Team Voting Phase")
                 get_game_logger().info("##### System #####")
                 get_game_logger().info("Team voting Phase")
-                votes = []
-                proxy.set_current_agent(0)
-                for i in range(num_players):
-                    proxy.set_current_agent(i)
-                    vote = await player_list[i].vote_on_team(
+                async def run_vote(idx, player):
+                    temp_wrapper = self._create_local_session_wrapper(player, proxy)
+                    v = await player.vote_on_team(
                         team                =   env.get_current_quest_team(),
                         mission_id          =   env.turn,
                         env                 =   env,
-                        )
-                    votes.append(vote)
+                        session             =   temp_wrapper
+                    )
+                    proxy.history[idx] = list(temp_wrapper.get_history())
+                    return v
+
+                import asyncio
+                votes = await asyncio.gather(
+                    *[run_vote(i, player_list[i]) for i in range(num_players)]
+                )
                 current_votes = votes   # capture for round summary
                 try:
                     outcome = env.gather_team_votes(votes)
@@ -629,14 +679,21 @@ class AvalonBench(Task):
                 game_env_log.append(f"Team votes at this round: {str(votes)}")
 
                 # Observe results of Team Selection
-                for idx, player in enumerate(player_list):
-                    proxy.set_current_agent(idx)
+                async def run_observe_team(idx, player):
+                    temp_wrapper = self._create_local_session_wrapper(player, proxy)
                     await player.observe_team_result(
                         mission_id  =   env.turn,
                         team        =   env.get_current_quest_team(),
                         votes       =   votes,
                         outcome     =   outcome[2],
+                        session             =   temp_wrapper
                     )
+                    proxy.history[idx] = list(temp_wrapper.get_history())
+
+                import asyncio
+                await asyncio.gather(
+                    *[run_observe_team(idx, player) for idx, player in enumerate(player_list)]
+                )
 
                 game_env_log.append("Team result: " + verbalize_team_result(team=env.get_current_quest_team(), votes=votes, outcome=outcome[2]))
                 get_game_logger().info("##### System #####")
@@ -669,22 +726,27 @@ class AvalonBench(Task):
                 '''
                 TODO: Can have a discussion before voting on quest
                 '''
-                votes = []
-                for i in env.get_current_quest_team():
-                    proxy.set_current_agent(i)
-                    vote = await player_list[i].vote_on_mission(
+                async def run_quest_vote(idx, player):
+                    temp_wrapper = self._create_local_session_wrapper(player, proxy)
+                    v = await player.vote_on_mission(
                         team        =   env.get_current_quest_team(),
                         mission_id  =   env.turn,
                         env         =   env,
+                        session             =   temp_wrapper
                     )
-                    votes.append(vote)
+                    proxy.history[idx] = list(temp_wrapper.get_history())
+                    return v
+
+                import asyncio
+                votes = await asyncio.gather(
+                    *[run_quest_vote(i, player_list[i]) for i in env.get_current_quest_team()]
+                )
                 outcome = env.gather_quest_votes(votes)
                 game_env_log.append(f"Quest votes at this round: {str(votes)}")
 
                 # Observe mission/quest result
-                proxy.set_current_agent(0)
-                for idx, player in enumerate(player_list):
-                    proxy.set_current_agent(idx)
+                async def run_observe_mission(idx, player):
+                    temp_wrapper = self._create_local_session_wrapper(player, proxy)
                     await player.observe_mission(
                         team        =   env.get_current_quest_team(),
                         mission_id  =   env.turn-1,
@@ -692,7 +754,14 @@ class AvalonBench(Task):
                         votes       =   votes,
                         outcome     =   outcome[2],
                         env         =   env,
+                        session             =   temp_wrapper
                     )
+                    proxy.history[idx] = list(temp_wrapper.get_history())
+
+                import asyncio
+                await asyncio.gather(
+                    *[run_observe_mission(idx, player) for idx, player in enumerate(player_list)]
+                )
 
                 game_env_log.append("Quest result: " + verbalize_mission_result(team=env.get_current_quest_team(), outcome=outcome[2]))
                 get_game_logger().info("##### System #####")
@@ -755,38 +824,54 @@ class AvalonBench(Task):
             servant_pids = [i for i, (_, name, _) in enumerate(true_roles) if name == "Servant"]
 
             # Optimized query loop: Assassin uses get_believed_merlin; Servants use get_believed_sides
-            for idx, player in enumerate(player_list):
+            async def run_end_belief(idx, player):
                 role_name = player.role_name
+                temp_wrapper = self._create_local_session_wrapper(player, proxy)
 
                 if role_name == 'Assassin':
-                    proxy.set_current_agent(idx)
                     try:
                         res = await player.get_believed_merlin(
                             num_players          = self.num_players,
                             env                  = env,
                             exclude_past_changes = True,
+                            session              = temp_wrapper
                         )
-                        all_believed_merlin_sides[idx] = res
-                        all_believed_player_sides[idx] = [0.5] * self.num_players
+                        return idx, 'merlin', res
                     except Exception as e:
                         get_game_logger().warning(f"Failed to get believed merlin for Player {idx}: {e}")
+                        return idx, 'merlin', None
 
                 elif role_name == 'Servant' or idx == llm_idx:
-                    proxy.set_current_agent(idx)
                     try:
                         res = await player.get_believed_sides(
                             num_players          = self.num_players,
                             env                  = env,
                             exclude_past_changes = True,
+                            session              = temp_wrapper
                         )
-                        if isinstance(res, tuple) and len(res) == 2:
-                            all_believed_player_sides[idx] = res[0]
-                            all_believed_merlin_sides[idx] = res[1]
-                        elif isinstance(res, list):
-                            all_believed_player_sides[idx] = res
-                            all_believed_merlin_sides[idx] = {}
+                        return idx, 'sides', res
                     except Exception as e:
                         get_game_logger().warning(f"Failed to get believed sides for Player {idx}: {e}")
+                        return idx, 'sides', None
+                return idx, 'none', None
+
+            import asyncio
+            belief_results = await asyncio.gather(
+                *[run_end_belief(idx, player) for idx, player in enumerate(player_list)]
+            )
+            for idx, qtype, res in belief_results:
+                if res is None:
+                    continue
+                if qtype == 'merlin':
+                    all_believed_merlin_sides[idx] = res
+                    all_believed_player_sides[idx] = [0.5] * self.num_players
+                elif qtype == 'sides':
+                    if isinstance(res, tuple) and len(res) == 2:
+                        all_believed_player_sides[idx] = res[0]
+                        all_believed_merlin_sides[idx] = res[1]
+                    elif isinstance(res, list):
+                        all_believed_player_sides[idx] = res
+                        all_believed_merlin_sides[idx] = {}
 
             # Determine game outcome (needed for win-based metrics)
             if env.good_victory:
@@ -958,10 +1043,15 @@ class AvalonBench(Task):
             result_dict[f"history for player {i}"] = proxy.history[i]
 
         if self.long_term_memories:
-            for pid, ltm in self.long_term_memories.items():
+            async def run_critique(pid, ltm):
                 player_won = (answer > 0) == bool(player_list[pid].side)
                 lesson = await self._run_game_critique(sessions[pid], player_list[pid], env, result_dict, observer_id=pid)
                 ltm.add_lesson(lesson, won=player_won)
+
+            import asyncio
+            await asyncio.gather(
+                *[run_critique(pid, ltm) for pid, ltm in self.long_term_memories.items()]
+            )
 
         return TaskSampleExecutionResult(status=finish_reason, result=result_dict)
 
@@ -979,10 +1069,28 @@ class AvalonBench(Task):
         )
 
         game_env_log = "\n".join(result_dict["game_env_log"]) if result_dict["game_env_log"] else "(No events recorded)"
-        
-        round_summaries = "\n\n".join(agent0.summaries_log) if agent0.summaries_log else "(No summaries recorded \u2014 game may have ended before round 1)"
-        
-        prediction_changes = "\n\n".join(agent0.prediction_changes_log) if agent0.prediction_changes_log else "(No prediction changes recorded)"
+
+        # Fix 1: cap round_summaries to last snapshot per mission (at most 5 entries)
+        import re as _re
+        if agent0.summaries_log:
+            last_per_mission = {}
+            for entry in agent0.summaries_log:
+                m = _re.match(r"\[Mission (\d+)", entry)
+                if m:
+                    last_per_mission[int(m.group(1))] = entry
+            capped = [last_per_mission[k] for k in sorted(last_per_mission)]
+            round_summaries = "\n\n".join(capped)
+        else:
+            round_summaries = "(No summaries recorded \u2014 game may have ended before round 1)"
+
+        # Fix 2: only include prediction_changes section when data exists
+        if agent0.prediction_changes_log:
+            changes_text = "\n\n".join(agent0.prediction_changes_log)
+            prediction_changes_block = (
+                f"\n--- HOW YOUR BELIEFS ABOUT OTHER PLAYERS CHANGED ---\n{changes_text}\n"
+            )
+        else:
+            prediction_changes_block = ""
 
         other_pids = [i for i in range(self.num_players) if i != observer_id]
         other_player_ids = ", ".join(f"Player {i}" for i in other_pids)
@@ -993,20 +1101,27 @@ class AvalonBench(Task):
             game_outcome=game_outcome,
             game_env_log=game_env_log,
             round_summaries=round_summaries,
-            prediction_changes=prediction_changes,
+            prediction_changes_block=prediction_changes_block,
             observer_id=observer_id,
             other_player_ids=other_player_ids
         )
 
-        past_history = list(session.get_history())
-        session.inject({"role": "user", "content": critique_prompt})
+
+        # Use a fresh isolated DirectSession — the critique prompt is self-contained,
+        # so no game history is needed. This avoids context window overflow on long games.
+        from .direct_session import DirectSession
+        underlying = getattr(session, 'session', None)
+        agent = underlying.agent if (underlying and hasattr(underlying, 'agent')) else None
+        if agent is None:
+            get_game_logger().warning("[LTM Critique] No agent available for critique call.")
+            return ""
+        critique_session = DirectSession(agent)
+        critique_session.inject({"role": "user", "content": critique_prompt})
         try:
-            response = await session.action()
+            response = await critique_session.action(max_tokens=8192)
             lesson = response.content if hasattr(response, 'content') else (response if isinstance(response, str) else str(response))
             get_game_logger().info(f"##### [LTM Critique] #####\n{lesson}")
             return lesson
         except Exception as e:
             get_game_logger().warning(f"[LTM Critique] LLM call failed: {e}")
             return ""
-        finally:
-            session.overwrite_history(past_history)
